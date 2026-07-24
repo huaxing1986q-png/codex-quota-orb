@@ -12,7 +12,7 @@ private final class NoRedirectDelegate: NSObject, URLSessionTaskDelegate {
     }
 }
 
-final class QuotaService {
+final class QuotaService: @unchecked Sendable {
     private let usageURL = URL(string: "https://chatgpt.com/backend-api/wham/usage")!
     private let maxAuthBytes = 256 * 1024
     private let maxResponseBytes = 1024 * 1024

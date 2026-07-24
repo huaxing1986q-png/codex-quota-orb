@@ -51,7 +51,7 @@ private final class JSONLineReader {
     }
 }
 
-final class TokenHistoryService {
+final class TokenHistoryService: @unchecked Sendable {
     private let store: PreferencesStore
     private let calendar = Calendar.autoupdatingCurrent
     private let maxCacheBytes = 8 * 1024 * 1024

@@ -11,7 +11,7 @@ final class MonitorController: OrbPanelActions {
     private var history = TokenHistorySnapshot()
     private let orb: OrbPanelController
     private let details: TokenDetailsWindowController
-    private var tickTimer: Timer?
+    private var tickTask: Task<Void, Never>?
     private var quotaRequestInFlight = false
     private var historyRequestInFlight = false
     private var lastQuotaRequest = Date.distantPast
@@ -19,11 +19,11 @@ final class MonitorController: OrbPanelActions {
     private var outsideSince: Date?
     private var globalClickMonitor: Any?
     private var localClickMonitor: Any?
-    private var saveAnchorWork: DispatchWorkItem?
+    private var saveAnchorTask: Task<Void, Never>?
     private var detailVisible = false
 
     private lazy var sessionMonitor = SessionChangeMonitor { [weak self] in
-        Task { @MainActor in self?.sessionsChanged() }
+        self?.requestSessionsChanged()
     }
 
     init() {
@@ -32,18 +32,25 @@ final class MonitorController: OrbPanelActions {
         details = TokenDetailsWindowController(snapshot: history, language: preferences.language)
         orb.actions = self
         details.onRefresh = { [weak self] in
-            Task { @MainActor in self?.refreshHistory() }
+            self?.requestHistoryRefresh()
         }
         details.onVisibilityChanged = { [weak self] visible in
-            Task { @MainActor in self?.detailVisible = visible }
+            self?.requestDetailVisibility(visible)
         }
     }
 
     func start() {
         installClickMonitors()
         sessionMonitor.start()
-        tickTimer = Timer.scheduledTimer(withTimeInterval: 0.25, repeats: true) { [weak self] _ in
-            Task { @MainActor in self?.tick() }
+        tickTask = Task { @MainActor [weak self] in
+            while !Task.isCancelled {
+                if let controller = self {
+                    controller.tick()
+                } else {
+                    return
+                }
+                try? await Task.sleep(nanoseconds: 250_000_000)
+            }
         }
         refreshQuota(force: true)
         refreshHistory()
@@ -51,8 +58,10 @@ final class MonitorController: OrbPanelActions {
     }
 
     func stop() {
-        tickTimer?.invalidate()
-        tickTimer = nil
+        tickTask?.cancel()
+        tickTask = nil
+        saveAnchorTask?.cancel()
+        saveAnchorTask = nil
         sessionMonitor.stop()
         if let globalClickMonitor { NSEvent.removeMonitor(globalClickMonitor) }
         if let localClickMonitor { NSEvent.removeMonitor(localClickMonitor) }
@@ -108,12 +117,12 @@ final class MonitorController: OrbPanelActions {
         globalClickMonitor = NSEvent.addGlobalMonitorForEvents(
             matching: [.leftMouseDown, .rightMouseDown]
         ) { [weak self] _ in
-            Task { @MainActor in self?.collapseIfClickIsOutside() }
+            self?.requestCollapse()
         }
         localClickMonitor = NSEvent.addLocalMonitorForEvents(
             matching: [.leftMouseDown, .rightMouseDown]
         ) { [weak self] event in
-            Task { @MainActor in self?.collapseIfClickIsOutside() }
+            self?.requestCollapse()
             return event
         }
     }
@@ -123,6 +132,30 @@ final class MonitorController: OrbPanelActions {
         if !orb.frame.contains(NSEvent.mouseLocation) {
             orb.setExpanded(false)
             outsideSince = nil
+        }
+    }
+
+    private nonisolated func requestCollapse() {
+        Task { @MainActor [weak self] in
+            self?.collapseIfClickIsOutside()
+        }
+    }
+
+    private nonisolated func requestSessionsChanged() {
+        Task { @MainActor [weak self] in
+            self?.sessionsChanged()
+        }
+    }
+
+    private nonisolated func requestHistoryRefresh() {
+        Task { @MainActor [weak self] in
+            self?.refreshHistory()
+        }
+    }
+
+    private nonisolated func requestDetailVisibility(_ visible: Bool) {
+        Task { @MainActor [weak self] in
+            self?.detailVisible = visible
         }
     }
 
@@ -143,42 +176,46 @@ final class MonitorController: OrbPanelActions {
         }
         quotaRequestInFlight = true
         lastQuotaRequest = now
-        Task { [weak self] in
-            guard let self else { return }
-            let latest = await quotaService.fetch()
-            await MainActor.run {
-                var display = latest
-                if latest.available {
-                    self.lastValidQuota = latest
-                } else if let valid = self.lastValidQuota,
-                          Date().timeIntervalSince(valid.sampledAt) <= 30 * 60 {
-                    display.plan = valid.plan
-                    display.weeklyRemaining = valid.weeklyRemaining
-                    display.weeklyReset = valid.weeklyReset
-                }
-                self.quota = display
-                self.quotaRequestInFlight = false
-                let closeToReset = display.weeklyReset.map {
-                    $0.timeIntervalSinceNow > -60 && $0.timeIntervalSinceNow < 15 * 60
-                } ?? false
-                self.nextQuotaRefresh = Date().addingTimeInterval(closeToReset ? 10 : 30)
-                self.orb.update(snapshot: display, preferences: self.preferences)
-            }
+        let service = quotaService
+        Task.detached(priority: .utility) { [weak self, service] in
+            let latest = await service.fetch()
+            await self?.applyQuota(latest)
         }
+    }
+
+    private func applyQuota(_ latest: QuotaSnapshot) {
+        var display = latest
+        if latest.available {
+            lastValidQuota = latest
+        } else if let valid = lastValidQuota,
+                  Date().timeIntervalSince(valid.sampledAt) <= 30 * 60 {
+            display.plan = valid.plan
+            display.weeklyRemaining = valid.weeklyRemaining
+            display.weeklyReset = valid.weeklyReset
+        }
+        quota = display
+        quotaRequestInFlight = false
+        let closeToReset = display.weeklyReset.map {
+            $0.timeIntervalSinceNow > -60 && $0.timeIntervalSinceNow < 15 * 60
+        } ?? false
+        nextQuotaRefresh = Date().addingTimeInterval(closeToReset ? 10 : 30)
+        orb.update(snapshot: display, preferences: preferences)
     }
 
     private func refreshHistory() {
         guard !historyRequestInFlight else { return }
         historyRequestInFlight = true
-        DispatchQueue.global(qos: .utility).async { [weak self, historyService = self.historyService] in
-            let latest = historyService.read()
-            DispatchQueue.main.async {
-                guard let self else { return }
-                self.history = latest
-                self.historyRequestInFlight = false
-                self.details.update(snapshot: latest, language: self.preferences.language)
-            }
+        let service = historyService
+        Task.detached(priority: .utility) { [weak self, service] in
+            let latest = service.read()
+            await self?.applyHistory(latest)
         }
+    }
+
+    private func applyHistory(_ latest: TokenHistorySnapshot) {
+        history = latest
+        historyRequestInFlight = false
+        details.update(snapshot: latest, language: preferences.language)
     }
 
     func orbPanelDidRequestToggle(_ controller: OrbPanelController) {
@@ -214,12 +251,12 @@ final class MonitorController: OrbPanelActions {
         preferences.hasCustomAnchor = true
         preferences.anchorX = anchor.x
         preferences.anchorY = anchor.y
-        saveAnchorWork?.cancel()
-        let work = DispatchWorkItem { [weak self] in
-            guard let self else { return }
-            self.store.save(self.preferences)
+        saveAnchorTask?.cancel()
+        let pending = preferences
+        saveAnchorTask = Task { @MainActor [weak self, pending] in
+            try? await Task.sleep(nanoseconds: 250_000_000)
+            guard !Task.isCancelled else { return }
+            self?.store.save(pending)
         }
-        saveAnchorWork = work
-        DispatchQueue.main.asyncAfter(deadline: .now() + .milliseconds(250), execute: work)
     }
 }
