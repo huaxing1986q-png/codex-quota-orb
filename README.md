@@ -6,6 +6,15 @@
 
 > 图中为界面预览与模拟数据。真实配额只在本机读取，不会写入仓库。
 
+## 下载
+
+| 平台 | 安装包 | 系统要求 |
+| --- | --- | --- |
+| macOS | [Codex-Quota-Orb-macOS.dmg](https://github.com/huaxing1986q-png/codex-quota-orb/releases/download/v0.3.1/Codex-Quota-Orb-macOS.dmg) | macOS 13+，Apple Silicon / Intel |
+| Windows | [Codex-Quota-Orb-Windows.zip](https://github.com/huaxing1986q-png/codex-quota-orb/releases/download/v0.3.1/Codex-Quota-Orb-Windows.zip) | Windows 10/11 |
+
+两个安装包统一发布在 [`v0.3.1`](https://github.com/huaxing1986q-png/codex-quota-orb/releases/tag/v0.3.1)。
+
 ## 特点
 
 - **低干扰**：静止时是 48pt/px 正圆小球，悬停不展开，单击才显示周配额卡。
@@ -47,8 +56,8 @@
 
 | 平台 | 实现 | 要求 | 状态 |
 | --- | --- | --- | --- |
-| macOS | Swift 5.9 + AppKit | macOS 13+，Apple Silicon / Intel | 原生版本 |
-| Windows | PowerShell + C# WinForms | Windows 10/11 | 原生版本 |
+| macOS | Swift 5.9 + AppKit | macOS 13+，Apple Silicon / Intel | DMG 安装包 |
+| Windows | PowerShell + C# WinForms | Windows 10/11 | ZIP 便携包 |
 
 ### macOS
 
@@ -77,7 +86,17 @@ dist/Codex-Quota-Orb-macOS.dmg
 
 ### Windows
 
-启动：
+下载并解压 [`Codex-Quota-Orb-Windows.zip`](https://github.com/huaxing1986q-png/codex-quota-orb/releases/download/v0.3.1/Codex-Quota-Orb-Windows.zip)，在解压目录运行：
+
+```powershell
+powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\Install.ps1
+```
+
+安装器会复制文件到 `%LOCALAPPDATA%\CodexQuotaOrb`、设置当前用户登录启动，并以无控制台窗口方式启动。若只想便携运行，直接双击 `Start Codex Quota Orb.vbs`。
+
+Windows 完整安装、卸载和隐私说明见 [`windows/README-Windows.md`](windows/README-Windows.md)。
+
+源码直接启动：
 
 ```powershell
 powershell.exe -NoProfile -ExecutionPolicy Bypass `
@@ -131,7 +150,8 @@ Token 详情仅读取 `token_count` 数值事件，按本地自然日聚合。�
 
 - Windows：`CodexMonitor.ps1 -Mode SelfTest`
 - macOS：`CodexQuotaOrb --self-test`
-- GitHub Actions：在真实 macOS runner 上完成 Swift 编译、自检、`.app` 和 `.dmg` 打包。
+- GitHub Actions（macOS）：在真实 macOS runner 上完成 Swift 编译、自检、`.app` 和 `.dmg` 打包。
+- GitHub Actions（Windows）：在真实 Windows runner 上完成配额解析自检和 ZIP 便携包构建。
 
 ## 参考
 

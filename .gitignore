@@ -7,6 +7,7 @@ Thumbs.db
 macos/CodexQuotaOrb/.build/
 macos/CodexQuotaOrb/.build-app/
 macos/CodexQuotaOrb/dist/
+dist/
 
 outputs/
 work/

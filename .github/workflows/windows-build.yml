@@ -1,0 +1,48 @@
+name: Windows build
+
+on:
+  push:
+    branches: ["main", "agent/windows-release"]
+    paths:
+      - "scripts/**"
+      - "windows/**"
+      - ".github/workflows/windows-build.yml"
+  pull_request:
+    paths:
+      - "scripts/**"
+      - "windows/**"
+      - ".github/workflows/windows-build.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: windows-2022
+    timeout-minutes: 15
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Windows self-test
+        shell: powershell
+        run: |
+          $result = & powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\scripts\CodexMonitor.ps1 -Mode SelfTest
+          $parsed = $result | ConvertFrom-Json
+          if (-not $parsed.passed) {
+            throw ($parsed | ConvertTo-Json -Depth 10)
+          }
+          $parsed | ConvertTo-Json -Compress
+
+      - name: Package Windows ZIP
+        shell: powershell
+        run: |
+          & powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\scripts\package-windows.ps1
+
+      - name: Upload Windows package
+        uses: actions/upload-artifact@v4
+        with:
+          name: Codex-Quota-Orb-Windows
+          path: dist/Codex-Quota-Orb-Windows.zip
+          if-no-files-found: error
