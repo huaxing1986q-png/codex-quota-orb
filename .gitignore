@@ -1,0 +1,12 @@
+.DS_Store
+Thumbs.db
+*.user
+*.tmp
+*.log
+
+macos/CodexQuotaOrb/.build/
+macos/CodexQuotaOrb/.build-app/
+macos/CodexQuotaOrb/dist/
+
+outputs/
+work/

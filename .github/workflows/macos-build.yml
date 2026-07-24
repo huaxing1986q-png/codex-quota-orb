@@ -1,0 +1,48 @@
+name: macOS build
+
+on:
+  push:
+    branches: ["main", "macos-native"]
+    paths:
+      - "macos/**"
+      - ".github/workflows/macos-build.yml"
+  pull_request:
+    paths:
+      - "macos/**"
+      - ".github/workflows/macos-build.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: macos-14
+    timeout-minutes: 20
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Swift version
+        run: swift --version
+
+      - name: Build and parse self-test
+        working-directory: macos/CodexQuotaOrb
+        run: |
+          swift build --configuration release
+          "$(swift build --configuration release --show-bin-path)/CodexQuotaOrb" --self-test
+
+      - name: Package native app and DMG
+        working-directory: macos/CodexQuotaOrb
+        run: |
+          chmod +x scripts/*.sh
+          ./scripts/build-app.sh
+
+      - name: Upload macOS package
+        uses: actions/upload-artifact@v4
+        with:
+          name: Codex-Quota-Orb-macOS
+          path: |
+            macos/CodexQuotaOrb/dist/Codex Quota Orb.app
+            macos/CodexQuotaOrb/dist/Codex-Quota-Orb-macOS.dmg
+          if-no-files-found: error
