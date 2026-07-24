@@ -6,6 +6,7 @@ private final class OverlayPanel: NSPanel {
     override var canBecomeMain: Bool { false }
 }
 
+@MainActor
 protocol OrbPanelActions: AnyObject {
     func orbPanelDidRequestToggle(_ controller: OrbPanelController)
     func orbPanelDidRequestDetails(_ controller: OrbPanelController)
@@ -14,6 +15,7 @@ protocol OrbPanelActions: AnyObject {
     func orbPanel(_ controller: OrbPanelController, didMoveAnchor anchor: NSPoint)
 }
 
+@MainActor
 final class OrbPanelController {
     static let orbSize = NSSize(width: 48, height: 48)
     static let cardSize = NSSize(width: 252, height: 132)
