@@ -1,7 +1,7 @@
 {
   "name": "codex-monitor-overlay",
-  "version": "0.4.7",
-  "description": "A native high-DPI Codex quota orb for macOS and Windows with authoritative weekly quota, cumulative context usage, and local token-history details.",
+  "version": "0.4.8",
+  "description": "A native high-DPI Codex quota orb for macOS and Windows with authoritative weekly quota, aggregate latest-context occupancy, and local token-history details.",
   "author": {
     "name": "Local developer"
   },
@@ -9,7 +9,7 @@
   "interface": {
     "displayName": "Codex Quota Orb",
     "shortDescription": "Live Codex quota orb with a detailed token-history view.",
-    "longDescription": "Shows authoritative Codex weekly remaining quota in a draggable native macOS or Windows orb, then opens local Token history plus cumulative context, project, and conversation details.",
+    "longDescription": "Shows authoritative Codex weekly remaining quota in a draggable native macOS or Windows orb, then opens local Token history plus aggregate latest-context occupancy by project and conversation.",
     "developerName": "Local developer",
     "category": "Productivity",
     "capabilities": [

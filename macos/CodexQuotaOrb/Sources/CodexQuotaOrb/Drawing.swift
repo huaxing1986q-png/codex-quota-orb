@@ -42,8 +42,8 @@ enum Copy {
 
     static func localDisclosure(_ language: AppLanguage) -> String {
         language == .chinese
-            ? "上方与下方为本机 Token 历史；中间为全部对话累计上下文。"
-            : "Top and bottom show local Token history; the middle shows cumulative context across all conversations."
+            ? "上方与下方为历史 Token；中间为全部对话最新上下文总占用。"
+            : "Top and bottom show Token history; the middle aggregates every conversation's latest context occupancy."
     }
 
     static func quitPlugin(_ language: AppLanguage) -> String {

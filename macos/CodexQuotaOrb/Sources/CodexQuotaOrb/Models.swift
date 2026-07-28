@@ -90,9 +90,12 @@ struct ConversationTokenUsage {
     var updatedAt = Date.distantPast
     var tokens: Int64 = 0
     var contextInputTokens: Int64 = 0
+    var contextCapacityTokens: Int64 = 0
     var cachedInputTokens: Int64 = 0
     var outputTokens: Int64 = 0
     var reasoningOutputTokens: Int64 = 0
+    var contextAvailable = false
+    var contextBreakdownAvailable = false
 }
 
 struct ProjectTokenUsage {
@@ -100,10 +103,12 @@ struct ProjectTokenUsage {
     var projectName = "Unknown project"
     var tokens: Int64 = 0
     var contextInputTokens: Int64 = 0
+    var contextCapacityTokens: Int64 = 0
     var cachedInputTokens: Int64 = 0
     var outputTokens: Int64 = 0
     var reasoningOutputTokens: Int64 = 0
     var conversations = 0
+    var contextConversations = 0
 }
 
 struct TokenHistorySnapshot {
