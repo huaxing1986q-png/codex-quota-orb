@@ -8,11 +8,10 @@ final class TokenDetailsWindowController: NSWindowController, NSWindowDelegate {
     }
     var onVisibilityChanged: ((Bool) -> Void)?
 
-    init(snapshot: TokenHistorySnapshot, quota: QuotaSnapshot, language: AppLanguage) {
+    init(snapshot: TokenHistorySnapshot, language: AppLanguage) {
         detailsView = TokenDetailsView(frame: NSRect(x: 0, y: 0, width: 1120, height: 780))
         contextBreakdown = ContextBreakdownWindowController(snapshot: snapshot, language: language)
         detailsView.snapshot = snapshot
-        detailsView.quota = quota
         detailsView.language = language
         let window = NSWindow(
             contentRect: NSRect(x: 0, y: 0, width: 1120, height: 780),
@@ -50,9 +49,8 @@ final class TokenDetailsWindowController: NSWindowController, NSWindowDelegate {
         window?.isVisible == true
     }
 
-    func update(snapshot: TokenHistorySnapshot, quota: QuotaSnapshot, language: AppLanguage) {
+    func update(snapshot: TokenHistorySnapshot, language: AppLanguage) {
         detailsView.snapshot = snapshot
-        detailsView.quota = quota
         detailsView.language = language
         contextBreakdown.update(snapshot: snapshot, language: language)
         window?.title = Copy.tokenDetails(language)
@@ -87,7 +85,6 @@ final class TokenDetailsWindowController: NSWindowController, NSWindowDelegate {
 
 private final class TokenDetailsView: NSView {
     var snapshot = TokenHistorySnapshot()
-    var quota = QuotaSnapshot()
     var language: AppLanguage = .systemDefault
     var selected: TokenDetailView = .daily
     var onRefresh: (() -> Void)?
@@ -314,14 +311,20 @@ private final class TokenDetailsView: NSView {
         card.lineWidth = 0.8
         card.stroke()
 
-        let remainingPercent = quota.available
-            ? quota.weeklyRemaining.map { min(100, max(0, $0)) }
-            : nil
-        let usedPercent = remainingPercent.map { min(100, max(0, 100 - $0)) }
-        let state = quotaStateColor(remainingPercent)
+        let available = snapshot.available && snapshot.totalTokens > 0 && snapshot.monthTokens >= 0
+        let monthShare = available ? share(snapshot.monthTokens, of: snapshot.totalTokens) : nil
+        let activeConversation = findActiveConversation()
+        let activeProject = findActiveProject(for: activeConversation)
+        let projectShare = activeProject.flatMap { share($0.tokens, of: snapshot.totalTokens) }
+        let conversationShare = activeConversation.flatMap { share($0.tokens, of: snapshot.totalTokens) }
+        let conversationProjectShare = {
+            guard let conversation = activeConversation, let project = activeProject else { return nil }
+            return share(conversation.tokens, of: project.tokens)
+        }()
+        let state = Palette.accent
         let heroWidth = max(260, rect.width * 0.34)
         drawText(
-            language == .chinese ? "本周总用量" : "WEEKLY TOTAL USAGE",
+            language == .chinese ? "本月总用量" : "MONTHLY TOTAL USAGE",
             in: NSRect(x: rect.minX + 24, y: rect.minY + 17, width: heroWidth - 40, height: 24),
             font: Typography.system(16, weight: .semibold),
             color: Palette.text
@@ -334,50 +337,49 @@ private final class TokenDetailsView: NSView {
             alignment: .right
         )
         drawText(
-            usedPercent.map { String(format: "%.0f%%", $0) } ?? "—",
-            in: NSRect(x: rect.minX + 22, y: rect.minY + 49, width: 92, height: 42),
+            available ? formatTokens(snapshot.monthTokens, language: language) : "—",
+            in: NSRect(x: rect.minX + 22, y: rect.minY + 49, width: heroWidth - 44, height: 42),
             font: Typography.mono(32, weight: .semibold),
             color: state
         )
-        let ratio: String
-        if let usedPercent, let remainingPercent {
-            ratio = language == .chinese
-                ? "已用 \(formatPercent(usedPercent)) · 剩余 \(formatPercent(remainingPercent))"
-                : "USED \(formatPercent(usedPercent)) · REMAINING \(formatPercent(remainingPercent))"
-        } else {
-            ratio = language == .chinese ? "等待官方配额数据" : "WAITING FOR OFFICIAL QUOTA"
-        }
+        let ratio = monthShare.map {
+            language == .chinese
+                ? "占累计总量 \(formatPercent($0))"
+                : "SHARE OF CUMULATIVE TOTAL \(formatPercent($0))"
+        } ?? (language == .chinese ? "正在读取本机 Token 历史" : "READING LOCAL TOKEN HISTORY")
         drawText(
             ratio,
-            in: NSRect(x: rect.minX + 104, y: rect.minY + 65, width: heroWidth - 126, height: 18),
+            in: NSRect(x: rect.minX + 24, y: rect.minY + 91, width: heroWidth - 48, height: 18),
             font: Typography.mono(10.5, weight: .medium),
             color: Palette.secondary
         )
         drawText(
-            language == .chinese ? "本周已用" : "WEEKLY USED",
-            in: NSRect(x: rect.minX + 24, y: rect.minY + 104, width: 76, height: 16),
+            language == .chinese ? "本月占累计" : "MONTH / CUMULATIVE",
+            in: NSRect(x: rect.minX + 24, y: rect.minY + 110, width: 80, height: 16),
             font: Typography.system(9.5, weight: .medium),
             color: Palette.secondary
         )
 
-        let track = NSRect(x: rect.minX + 104, y: rect.minY + 108, width: max(110, heroWidth - 128), height: 7)
+        let track = NSRect(x: rect.minX + 104, y: rect.minY + 113, width: max(110, heroWidth - 128), height: 7)
         Palette.stroke.withAlpha(0.52).setFill()
         roundedPath(track, radius: 3.5).fill()
-        if let usedPercent {
+        if let monthShare {
             let fill = NSRect(
                 x: track.minX,
                 y: track.minY,
-                width: max(4, min(track.width, track.width * usedPercent / 100)),
+                width: max(4, min(track.width, track.width * monthShare / 100)),
                 height: track.height
             )
             state.setFill()
             roundedPath(fill, radius: 3.5).fill()
         }
         drawText(
-            quotaGuidance(remainingPercent),
-            in: NSRect(x: rect.minX + 24, y: rect.minY + 127, width: heroWidth - 42, height: 17),
+            language == .chinese
+                ? "按当前自然月统计"
+                : "CURRENT CALENDAR MONTH",
+            in: NSRect(x: rect.minX + 24, y: rect.minY + 132, width: heroWidth - 42, height: 17),
             font: Typography.system(9.5, weight: .medium),
-            color: state
+            color: Palette.secondary
         )
 
         let detailsX = rect.minX + heroWidth + 18
@@ -390,37 +392,42 @@ private final class TokenDetailsView: NSView {
 
         let detailsWidth = rect.maxX - 24 - detailsX
         let cellWidth = max(90, detailsWidth / 4)
+        let cellY = rect.minY + 52
         drawContextValue(
             x: detailsX,
-            y: rect.minY + 38,
+            y: cellY,
             width: cellWidth,
-            label: language == .chinese ? "已用配额" : "QUOTA USED",
-            value: usedPercent.map { formatPercent($0) } ?? "—"
+            label: language == .chinese ? "当前项目总占比" : "CURRENT PROJECT / TOTAL",
+            value: projectShare.map { formatPercent($0) } ?? "—"
         )
         drawContextValue(
             x: detailsX + cellWidth,
-            y: rect.minY + 38,
+            y: cellY,
             width: cellWidth,
-            label: language == .chinese ? "剩余配额" : "QUOTA REMAINING",
-            value: remainingPercent.map { formatPercent($0) } ?? "—"
+            label: language == .chinese ? "当前对话总占比" : "CURRENT CONVERSATION / TOTAL",
+            value: conversationShare.map { formatPercent($0) } ?? "—"
         )
         drawContextValue(
             x: detailsX + cellWidth * 2,
-            y: rect.minY + 38,
+            y: cellY,
             width: cellWidth,
-            label: language == .chinese ? "重置时间" : "RESET TIME",
-            value: formatQuotaReset(quota.weeklyReset)
+            label: language == .chinese ? "项目内占比" : "CONVERSATION / PROJECT",
+            value: conversationProjectShare.map { formatPercent($0) } ?? "—"
         )
         drawContextValue(
             x: detailsX + cellWidth * 3,
-            y: rect.minY + 38,
+            y: cellY,
             width: max(80, detailsWidth - cellWidth * 3),
-            label: language == .chinese ? "账户版本" : "ACCOUNT PLAN",
-            value: quota.available ? quota.plan : "—"
+            label: language == .chinese ? "本机累计" : "LOCAL CUMULATIVE",
+            value: snapshot.available ? formatTokens(snapshot.totalTokens, language: language) : "—"
         )
 
         drawText(
-            quotaFooter(),
+            available
+                ? (language == .chinese
+                    ? "本月 \(formatTokens(snapshot.monthTokens, language: language)) / 本机累计 \(formatTokens(snapshot.totalTokens, language: language)) · 本机数字记录统计"
+                    : "MONTH \(formatTokens(snapshot.monthTokens, language: language)) / LOCAL CUMULATIVE \(formatTokens(snapshot.totalTokens, language: language)) · LOCAL NUMERIC HISTORY")
+                : (language == .chinese ? "本机 Token 历史暂不可用，将自动重试" : "LOCAL TOKEN HISTORY UNAVAILABLE · RETRYING AUTOMATICALLY"),
             in: NSRect(x: detailsX, y: rect.maxY - 31, width: detailsWidth, height: 18),
             font: Typography.system(9.5),
             color: Palette.secondary
@@ -446,55 +453,29 @@ private final class TokenDetailsView: NSView {
         String(format: "%.0f%%", min(100, max(0, value)))
     }
 
-    private func formatQuotaReset(_ date: Date?) -> String {
-        guard let date else { return "—" }
-        let formatter = DateFormatter()
-        formatter.locale = language == .chinese ? Locale(identifier: "zh_CN") : Locale(identifier: "en_US_POSIX")
-        formatter.dateFormat = language == .chinese ? "M-d HH:mm" : "MMM d HH:mm"
-        return formatter.string(from: date)
+    private func share(_ part: Int64, of total: Int64) -> Double? {
+        guard total > 0, part >= 0 else { return nil }
+        return min(100, max(0, Double(part) * 100 / Double(total)))
     }
 
-    private func quotaStateColor(_ remainingPercent: Double?) -> NSColor {
-        guard let remainingPercent else { return Palette.secondary.withAlphaComponent(0.62) }
-        if remainingPercent >= 50 { return Palette.healthy }
-        if remainingPercent >= 10 { return Palette.caution }
-        return Palette.critical
+    private func findActiveConversation() -> ConversationTokenUsage? {
+        guard let sessionID = snapshot.context.sessionID else { return nil }
+        return snapshot.conversations.first {
+            $0.sessionID.compare(sessionID, options: .caseInsensitive) == .orderedSame
+        }
     }
 
-    private func quotaGuidance(_ remainingPercent: Double?) -> String {
-        guard let remainingPercent else {
-            return language == .chinese ? "状态不可用" : "STATUS UNAVAILABLE"
+    private func findActiveProject(for conversation: ConversationTokenUsage?) -> ProjectTokenUsage? {
+        guard let conversation else { return nil }
+        if let path = conversation.projectPath {
+            return snapshot.projects.first {
+                guard let projectPath = $0.projectPath else { return false }
+                return projectPath.compare(path, options: .caseInsensitive) == .orderedSame
+            }
         }
-        if remainingPercent >= 50 {
-            return language == .chinese
-                ? "健康 · 剩余 \(formatPercent(remainingPercent))"
-                : "HEALTHY · \(formatPercent(remainingPercent)) REMAINING"
+        return snapshot.projects.first {
+            $0.projectName.compare(conversation.projectName, options: .caseInsensitive) == .orderedSame
         }
-        if remainingPercent >= 10 {
-            return language == .chinese
-                ? "谨慎 · 剩余 \(formatPercent(remainingPercent))"
-                : "CAUTION · \(formatPercent(remainingPercent)) REMAINING"
-        }
-        return language == .chinese
-            ? "紧急 · 剩余 \(formatPercent(remainingPercent))"
-            : "CRITICAL · \(formatPercent(remainingPercent)) REMAINING"
-    }
-
-    private func quotaFooter() -> String {
-        guard quota.available, quota.weeklyRemaining != nil else {
-            return language == .chinese
-                ? "官方本周配额暂不可用，将自动重试"
-                : "OFFICIAL WEEKLY QUOTA UNAVAILABLE · RETRYING AUTOMATICALLY"
-        }
-        let time = DateFormatter.localizedString(from: quota.sampledAt, dateStyle: .none, timeStyle: .medium)
-        if quota.status == "stale" {
-            return language == .chinese
-                ? "官方配额 · 最近成功数据 \(time) · 当前连接暂不可用"
-                : "OFFICIAL QUOTA · LATEST SUCCESSFUL SAMPLE \(time) · CONNECTION UNAVAILABLE"
-        }
-        return language == .chinese
-            ? "官方配额 · 已验证 \(time) · 容量、项目与对话结构请点击查看"
-            : "OFFICIAL QUOTA · VERIFIED \(time) · CLICK FOR CAPACITY, PROJECT, AND CONVERSATION DETAILS"
     }
 
     private func drawActivity() {

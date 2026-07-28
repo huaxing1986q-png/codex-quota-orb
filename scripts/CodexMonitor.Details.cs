@@ -38,7 +38,6 @@ namespace CodexMonitor
         private readonly List<HeatCellHit> heatCells = new List<HeatCellHit>();
         private Task<TokenHistorySnapshot> refreshTask;
         private TokenHistorySnapshot snapshot;
-        private UsageSnapshot quota;
         private ContextBreakdownForm contextBreakdownForm;
         private Rectangle contextPanelBounds;
         private TokenDetailView activeView = TokenDetailView.Daily;
@@ -62,15 +61,12 @@ namespace CodexMonitor
         private readonly Font chartValueFont = PixelFont("Consolas", 10f, FontStyle.Bold);
         private readonly Font emptyFont = PixelFont("Microsoft YaHei UI", 15f, FontStyle.Bold);
 
-        internal TokenDetailsForm(string sessionsRootValue, string cachePathValue, bool chineseValue, float initialScale, UsageSnapshot quotaValue)
+        internal TokenDetailsForm(string sessionsRootValue, string cachePathValue, bool chineseValue, float initialScale)
         {
             sessionsRoot = sessionsRootValue;
             cachePath = cachePathValue;
             chinese = chineseValue;
             uiScale = Math.Max(1f, initialScale);
-            quota = quotaValue == null
-                ? new UsageSnapshot { Status = "loading", Message = "Refreshing quota data." }
-                : quotaValue.Clone();
 
             Text = chinese ? "Codex Token 使用详情" : "Codex token usage details";
             FormBorderStyle = FormBorderStyle.Sizable;
@@ -146,14 +142,6 @@ namespace CodexMonitor
             UpdateLanguage();
             if (contextBreakdownForm != null && !contextBreakdownForm.IsDisposed)
                 contextBreakdownForm.SetLanguage(chineseValue);
-            Invalidate();
-        }
-
-        internal void SetQuota(UsageSnapshot value)
-        {
-            quota = value == null
-                ? new UsageSnapshot { Status = "unavailable", Message = "Quota data is unavailable." }
-                : value.Clone();
             Invalidate();
         }
 
@@ -331,7 +319,7 @@ namespace CodexMonitor
             {
                 g.DrawString(chinese ? "Token 使用详情" : "Token usage details", titleFont, ink, 40, 34);
                 g.DrawString(
-                    chinese ? "官方本周配额与本机 Token 历史分开统计；项目和对话占比均基于本机历史总量" : "Official weekly quota is separate from local Token history; project and conversation shares use the local total",
+                    chinese ? "本月与累计 Token 按本机历史统计；官方周配额仅显示在浮球" : "Monthly and cumulative Tokens use local history; official weekly quota remains in the orb",
                     subtitleFont, secondary, 40, 75);
             }
 
@@ -423,10 +411,16 @@ namespace CodexMonitor
             using (Pen edge = new Pen(Color.FromArgb(58, 93, 127, 152), 1f))
                 g.DrawPath(edge, edgePath);
 
-            bool available = quota != null && quota.Available && quota.SecondaryAvailable;
-            double usedPercent = available ? ClampPercent(quota.SecondaryUsed) : -1;
-            double remainingPercent = available ? ClampPercent(100d - usedPercent) : -1;
-            Color state = QuotaStateColor(remainingPercent);
+            bool available = snapshot != null && snapshot.Available && snapshot.TotalTokens > 0 && snapshot.MonthTokens >= 0;
+            double monthShare = available ? Share(snapshot.MonthTokens, snapshot.TotalTokens) : -1;
+            ConversationTokenUsage activeConversation = FindActiveConversation(snapshot);
+            ProjectTokenUsage activeProject = FindActiveProject(snapshot, activeConversation);
+            double projectShare = activeProject == null || snapshot == null ? -1 : Share(activeProject.Tokens, snapshot.TotalTokens);
+            double conversationShare = activeConversation == null || snapshot == null ? -1 : Share(activeConversation.Tokens, snapshot.TotalTokens);
+            double conversationProjectShare = activeConversation == null || activeProject == null
+                ? -1
+                : Share(activeConversation.Tokens, activeProject.Tokens);
+            Color state = Color.FromArgb(57, 122, 224);
             int heroWidth = Math.Max(260, (int)Math.Round(panel.Width * 0.34));
 
             using (SolidBrush ink = new SolidBrush(Color.FromArgb(23, 29, 37)))
@@ -434,50 +428,56 @@ namespace CodexMonitor
             using (SolidBrush stateBrush = new SolidBrush(state))
             using (Pen divider = new Pen(Color.FromArgb(35, 86, 105, 122), 1f))
             {
-                g.DrawString(chinese ? "本周总用量" : "Weekly total usage", sectionFont, ink, panel.X + 24, panel.Y + 17);
+                g.DrawString(chinese ? "本月总用量" : "Monthly total usage", sectionFont, ink, panel.X + 24, panel.Y + 17);
                 string action = chinese ? "点击查看容量与占用明细" : "Click for capacity and usage details";
                 SizeF actionSize = g.MeasureString(action, metaFont);
                 g.DrawString(action, metaFont, secondary, panel.Right - 24 - actionSize.Width, panel.Y + 20);
-                string percent = available ? usedPercent.ToString("0", CultureInfo.CurrentCulture) + "%" : "—";
-                g.DrawString(percent, heroMetricFont, stateBrush, panel.X + 22, panel.Y + 50);
+                string monthValue = available ? FormatTokens(snapshot.MonthTokens, chinese) : "—";
+                DrawMetricValue(g, monthValue, heroMetricFont, stateBrush, panel.X + 22, panel.Y + 50);
                 string ratio = available
-                    ? (chinese ? "已用 " : "Used ") + FormatPercent(usedPercent)
-                        + (chinese ? " · 剩余 " : " · Remaining ") + FormatPercent(remainingPercent)
-                    : (chinese ? "等待官方配额数据" : "Waiting for official quota data");
-                g.DrawString(ratio, metaFont, secondary, panel.X + 105, panel.Y + 69);
-                g.DrawString(chinese ? "本周已用" : "Weekly used", metaFont, secondary, panel.X + 24, panel.Y + 104);
+                    ? (chinese ? "占累计总量 " : "Share of cumulative total ") + FormatPercent(monthShare)
+                    : (chinese ? "正在读取本机 Token 历史" : "Reading local Token history");
+                g.DrawString(ratio, metaFont, secondary, panel.X + 24, panel.Y + 91);
+                g.DrawString(chinese ? "本月占累计" : "Month / cumulative", metaFont, secondary, panel.X + 24, panel.Y + 110);
 
-                Rectangle track = new Rectangle(panel.X + 105, panel.Y + 107, Math.Max(110, heroWidth - 129), 7);
+                Rectangle track = new Rectangle(panel.X + 105, panel.Y + 113, Math.Max(110, heroWidth - 129), 7);
                 using (GraphicsPath trackPath = RoundedRect(track, 4))
                 using (SolidBrush trackFill = new SolidBrush(Color.FromArgb(220, 229, 235)))
                     g.FillPath(trackFill, trackPath);
                 if (available)
                 {
-                    int fillWidth = Math.Max(4, (int)Math.Round(track.Width * usedPercent / 100d));
+                    int fillWidth = Math.Max(4, (int)Math.Round(track.Width * monthShare / 100d));
                     using (GraphicsPath fillPath = RoundedRect(new Rectangle(track.X, track.Y, Math.Min(track.Width, fillWidth), track.Height), 4))
                     using (SolidBrush progress = new SolidBrush(state))
                         g.FillPath(progress, fillPath);
                 }
-                g.DrawString(QuotaGuidance(remainingPercent, chinese), metaFont, stateBrush, panel.X + 24, panel.Y + 127);
+                g.DrawString(
+                    chinese ? "按当前自然月统计" : "Current calendar month",
+                    metaFont, secondary, panel.X + 24, panel.Y + 132);
 
                 int detailsX = panel.X + heroWidth + 18;
                 int detailsWidth = panel.Right - 24 - detailsX;
                 g.DrawLine(divider, detailsX - 12, panel.Y + 24, detailsX - 12, panel.Bottom - 23);
                 int cellWidth = Math.Max(90, detailsWidth / 4);
-                DrawContextValue(g, detailsX, panel.Y + 38, cellWidth,
-                    chinese ? "已用配额" : "Quota used",
-                    available ? FormatPercent(usedPercent) : "—");
-                DrawContextValue(g, detailsX + cellWidth, panel.Y + 38, cellWidth,
-                    chinese ? "剩余配额" : "Quota remaining",
-                    available ? FormatPercent(remainingPercent) : "—");
-                DrawContextValue(g, detailsX + cellWidth * 2, panel.Y + 38, cellWidth,
-                    chinese ? "重置时间" : "Reset time",
-                    available ? FormatReset(quota.SecondaryReset, chinese) : "—");
-                DrawContextValue(g, detailsX + cellWidth * 3, panel.Y + 38, Math.Max(80, detailsWidth - cellWidth * 3),
-                    chinese ? "账户版本" : "Account plan",
-                    available && !String.IsNullOrWhiteSpace(quota.Plan) ? quota.Plan : "—");
+                int cellY = panel.Y + 52;
+                DrawContextValue(g, detailsX, cellY, cellWidth,
+                    chinese ? "当前项目总占比" : "Current project / total",
+                    FormatShare(projectShare));
+                DrawContextValue(g, detailsX + cellWidth, cellY, cellWidth,
+                    chinese ? "当前对话总占比" : "Current conversation / total",
+                    FormatShare(conversationShare));
+                DrawContextValue(g, detailsX + cellWidth * 2, cellY, cellWidth,
+                    chinese ? "项目内占比" : "Conversation / project",
+                    FormatShare(conversationProjectShare));
+                DrawContextValue(g, detailsX + cellWidth * 3, cellY, Math.Max(80, detailsWidth - cellWidth * 3),
+                    chinese ? "本机累计" : "Local cumulative",
+                    snapshot == null ? "—" : FormatTokens(snapshot.TotalTokens, chinese));
 
-                string footer = QuotaFooter(quota, chinese);
+                string footer = available
+                    ? (chinese ? "本月 " : "Month ") + FormatTokens(snapshot.MonthTokens, chinese)
+                        + (chinese ? " / 本机累计 " : " / local cumulative ") + FormatTokens(snapshot.TotalTokens, chinese)
+                        + (chinese ? " · 本机数字记录统计" : " · local numeric history")
+                    : (chinese ? "本机 Token 历史暂不可用，将自动重试" : "Local Token history is unavailable; retrying automatically");
                 g.DrawString(footer, metaFont, secondary, detailsX, panel.Bottom - 30);
             }
         }
@@ -492,27 +492,42 @@ namespace CodexMonitor
             return ClampPercent(value).ToString("0", CultureInfo.CurrentCulture) + "%";
         }
 
-        private static string FormatReset(long epochSeconds, bool chinese)
+        private static string FormatShare(double value)
         {
-            if (epochSeconds <= 0) return "—";
-            try
-            {
-                DateTime local = DateTimeOffset.FromUnixTimeSeconds(epochSeconds).LocalDateTime;
-                return local.ToString(chinese ? "M-d HH:mm" : "MMM d HH:mm", CultureInfo.CurrentCulture);
-            }
-            catch { return "—"; }
+            return value < 0 ? "—" : FormatPercent(value);
         }
 
-        private static string QuotaFooter(UsageSnapshot value, bool chinese)
+        private static double Share(long part, long total)
         {
-            if (value == null || !value.Available || !value.SecondaryAvailable)
-                return chinese ? "官方本周配额暂不可用，将自动重试" : "Official weekly quota is unavailable; retrying automatically";
-            string time = value.SampleUtc == DateTime.MinValue
-                ? "—"
-                : value.SampleUtc.ToLocalTime().ToString("HH:mm:ss", CultureInfo.CurrentCulture);
-            if (value.Status == "stale")
-                return chinese ? "官方配额 · 最近成功数据 " + time + " · 当前连接暂不可用" : "Official quota · latest successful sample " + time + " · connection unavailable";
-            return chinese ? "官方配额 · 已验证 " + time + " · 容量、项目与对话结构请点击查看" : "Official quota · verified " + time + " · click for capacity, project, and conversation details";
+            if (total <= 0 || part < 0) return -1;
+            return ClampPercent(part * 100d / total);
+        }
+
+        private static ConversationTokenUsage FindActiveConversation(TokenHistorySnapshot value)
+        {
+            if (value == null || value.Context == null || String.IsNullOrWhiteSpace(value.Context.SessionId)) return null;
+            foreach (ConversationTokenUsage conversation in value.Conversations)
+            {
+                if (conversation != null && String.Equals(conversation.SessionId, value.Context.SessionId, StringComparison.OrdinalIgnoreCase))
+                    return conversation;
+            }
+            return null;
+        }
+
+        private static ProjectTokenUsage FindActiveProject(TokenHistorySnapshot value, ConversationTokenUsage conversation)
+        {
+            if (value == null || conversation == null) return null;
+            foreach (ProjectTokenUsage project in value.Projects)
+            {
+                if (project == null) continue;
+                if (!String.IsNullOrWhiteSpace(conversation.ProjectPath)
+                    && String.Equals(project.ProjectPath, conversation.ProjectPath, StringComparison.OrdinalIgnoreCase))
+                    return project;
+                if (String.IsNullOrWhiteSpace(conversation.ProjectPath)
+                    && String.Equals(project.ProjectName, conversation.ProjectName, StringComparison.OrdinalIgnoreCase))
+                    return project;
+            }
+            return null;
         }
 
         private void DrawContextValue(Graphics g, int x, int y, int width, string label, string value)
@@ -523,22 +538,6 @@ namespace CodexMonitor
                 g.DrawString(label, metaFont, labelBrush, new RectangleF(x, y, width - 8, 18));
                 g.DrawString(value, metricLabelFont, valueBrush, new RectangleF(x, y + 25, width - 8, 24));
             }
-        }
-
-        private static Color QuotaStateColor(double remainingPercent)
-        {
-            if (remainingPercent < 0) return Color.FromArgb(154, 164, 174);
-            if (remainingPercent >= 50) return Color.FromArgb(51, 200, 120);
-            if (remainingPercent >= 10) return Color.FromArgb(214, 155, 45);
-            return Color.FromArgb(233, 93, 79);
-        }
-
-        private static string QuotaGuidance(double remainingPercent, bool chinese)
-        {
-            if (remainingPercent < 0) return chinese ? "状态不可用" : "Status unavailable";
-            if (remainingPercent >= 50) return chinese ? "健康 · 剩余 " + FormatPercent(remainingPercent) : "Healthy · " + FormatPercent(remainingPercent) + " remaining";
-            if (remainingPercent >= 10) return chinese ? "谨慎 · 剩余 " + FormatPercent(remainingPercent) : "Caution · " + FormatPercent(remainingPercent) + " remaining";
-            return chinese ? "紧急 · 剩余 " + FormatPercent(remainingPercent) : "Critical · " + FormatPercent(remainingPercent) + " remaining";
         }
 
         private void DrawActivityPanel(Graphics g, int width, int height)

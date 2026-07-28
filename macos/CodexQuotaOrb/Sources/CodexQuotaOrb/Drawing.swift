@@ -42,8 +42,8 @@ enum Copy {
 
     static func localDisclosure(_ language: AppLanguage) -> String {
         language == .chinese
-            ? "官方本周配额与本机 Token 历史分开统计；项目和对话占比均基于本机历史总量。"
-            : "Official weekly quota is separate from local Token history; project and conversation shares use the local total."
+            ? "本月与累计 Token 按本机历史统计；官方周配额仅显示在浮球。"
+            : "Monthly and cumulative Tokens use local history; official weekly quota remains in the orb."
     }
 
     static func quitPlugin(_ language: AppLanguage) -> String {

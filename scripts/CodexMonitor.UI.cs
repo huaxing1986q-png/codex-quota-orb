@@ -549,7 +549,6 @@ namespace CodexMonitor
                 nextRefresh = DateTime.UtcNow.AddSeconds(seconds);
             }
             UpdateDataToolTip();
-            if (detailsForm != null && !detailsForm.IsDisposed) detailsForm.SetQuota(usage);
             RefreshVisual();
         }
 
@@ -1061,19 +1060,16 @@ namespace CodexMonitor
                 if (detailsForm != null && !detailsForm.IsDisposed)
                 {
                     detailsForm.SetLanguage(preferences.Language != "en");
-                    detailsForm.SetQuota(usage);
                     detailsForm.Reveal();
                     detailsForm.RequestRefresh();
-                    StartRefresh(true);
                     SetExpanded(false, false);
                     return true;
                 }
 
-                detailsForm = new TokenDetailsForm(sessionsRoot, historyCachePath, preferences.Language != "en", uiScale, usage);
+                detailsForm = new TokenDetailsForm(sessionsRoot, historyCachePath, preferences.Language != "en", uiScale);
                 detailsForm.FormClosed += delegate { detailsForm = null; };
                 Screen screen = Screen.FromPoint(new Point(Left + Width / 2, Top + Height / 2));
                 detailsForm.ShowOnScreen(screen);
-                StartRefresh(true);
                 SetExpanded(false, false);
                 return true;
             }
@@ -1277,8 +1273,7 @@ namespace CodexMonitor
                 sessionsRoot,
                 Path.Combine(folder, "token-history-cache.json"),
                 preferences.Language != "en",
-                NativeMethods.SystemScale(),
-                QuotaServiceReader.ReadLatest());
+                NativeMethods.SystemScale());
             detail.PlaceOnScreen(Screen.PrimaryScreen);
             if (autoCloseSeconds > 0)
             {
