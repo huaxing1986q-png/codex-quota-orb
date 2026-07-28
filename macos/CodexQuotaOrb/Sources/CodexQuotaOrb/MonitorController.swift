@@ -247,6 +247,10 @@ final class MonitorController: OrbPanelActions {
         updateVisibility()
     }
 
+    func orbPanelDidRequestQuit(_ controller: OrbPanelController) {
+        NSApp.terminate(nil)
+    }
+
     func orbPanel(_ controller: OrbPanelController, didMoveAnchor anchor: NSPoint) {
         preferences.hasCustomAnchor = true
         preferences.anchorX = anchor.x

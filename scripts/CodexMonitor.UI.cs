@@ -270,6 +270,8 @@ namespace CodexMonitor
         private readonly Button languageButton;
         private readonly Button topButton;
         private readonly ToolTip toolTip;
+        private readonly ContextMenuStrip orbContextMenu;
+        private readonly ToolStripMenuItem exitMenuItem;
         private FileSystemWatcher sessionWatcher;
         private Task<UsageSnapshot> refreshTask;
         private UsageSnapshot usage = new UsageSnapshot { Status = "loading", Message = "Refreshing quota data." };
@@ -339,6 +341,15 @@ namespace CodexMonitor
             Controls.Add(languageButton);
             Controls.Add(topButton);
             toolTip = new ToolTip { InitialDelay = 250, ReshowDelay = 100, AutoPopDelay = 3500 };
+            orbContextMenu = new ContextMenuStrip {
+                ShowImageMargin = false,
+                ShowCheckMargin = false,
+                RenderMode = ToolStripRenderMode.System
+            };
+            exitMenuItem = new ToolStripMenuItem();
+            exitMenuItem.Click += delegate { ExitFromContextMenu(); };
+            orbContextMenu.Items.Add(exitMenuItem);
+            orbContextMenu.Closed += delegate { BeginInteractionGrace(TimeSpan.FromMilliseconds(500)); };
             UpdateControlText();
             UpdateDataToolTip();
             LayoutControls();
@@ -813,6 +824,8 @@ namespace CodexMonitor
             topButton.AccessibleName = chinese
                 ? (preferences.AlwaysOnTop ? "取消始终置顶" : "始终置顶")
                 : (preferences.AlwaysOnTop ? "Disable always on top" : "Always on top");
+            exitMenuItem.Text = chinese ? "退出插件" : "Exit plugin";
+            exitMenuItem.AccessibleName = exitMenuItem.Text;
             toolTip.SetToolTip(languageButton, languageButton.AccessibleName);
             toolTip.SetToolTip(topButton, topButton.AccessibleName);
         }
@@ -1077,6 +1090,18 @@ namespace CodexMonitor
                 StartRefresh(true);
         }
 
+        private void ShowOrbContextMenu()
+        {
+            BeginInteractionGrace(TimeSpan.FromSeconds(10));
+            orbContextMenu.Show(Cursor.Position);
+        }
+
+        private void ExitFromContextMenu()
+        {
+            userClosing = true;
+            Close();
+        }
+
         protected override void OnMouseDown(MouseEventArgs e)
         {
             base.OnMouseDown(e);
@@ -1119,6 +1144,11 @@ namespace CodexMonitor
         protected override void OnMouseUp(MouseEventArgs e)
         {
             base.OnMouseUp(e);
+            if (e.Button == MouseButtons.Right && IsOrbSize)
+            {
+                ShowOrbContextMenu();
+                return;
+            }
             if (e.Button != MouseButtons.Left || !dragCandidate) return;
             dragCandidate = false;
             Capture = false;
@@ -1209,7 +1239,7 @@ namespace CodexMonitor
             if (disposing)
             {
                 if (sessionWatcher != null) sessionWatcher.Dispose();
-                monitorTimer.Dispose(); animationTimer.Dispose(); toolTip.Dispose();
+                monitorTimer.Dispose(); animationTimer.Dispose(); toolTip.Dispose(); orbContextMenu.Dispose();
                 headerFont.Dispose(); statusFont.Dispose(); labelFont.Dispose(); percentFont.Dispose(); resetFont.Dispose(); orbFont.Dispose(); orbPercentFont.Dispose();
             }
             base.Dispose(disposing);

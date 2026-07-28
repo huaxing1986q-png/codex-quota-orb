@@ -10,10 +10,10 @@
 
 | 平台 | 安装包 | 系统要求 |
 | --- | --- | --- |
-| macOS | [Codex-Quota-Orb-macOS.dmg](https://github.com/huaxing1986q-png/codex-quota-orb/releases/download/v0.4.0/Codex-Quota-Orb-macOS.dmg) | macOS 13+，Apple Silicon / Intel |
-| Windows | [Codex-Quota-Orb-Windows.zip](https://github.com/huaxing1986q-png/codex-quota-orb/releases/download/v0.4.0/Codex-Quota-Orb-Windows.zip) | Windows 10/11 |
+| macOS | [Codex-Quota-Orb-macOS.dmg](https://github.com/huaxing1986q-png/codex-quota-orb/releases/download/v0.4.1/Codex-Quota-Orb-macOS.dmg) | macOS 13+，Apple Silicon / Intel |
+| Windows | [Codex-Quota-Orb-Windows.zip](https://github.com/huaxing1986q-png/codex-quota-orb/releases/download/v0.4.1/Codex-Quota-Orb-Windows.zip) | Windows 10/11 |
 
-两个安装包统一发布在 [`v0.4.0`](https://github.com/huaxing1986q-png/codex-quota-orb/releases/tag/v0.4.0)。
+两个安装包统一发布在 [`v0.4.1`](https://github.com/huaxing1986q-png/codex-quota-orb/releases/tag/v0.4.1)。
 
 ## 特点
 
@@ -70,13 +70,14 @@
 ## 交互
 
 1. 单击圆球：展开周配额卡。
-2. 悬停圆球：保持圆球，不自动展开。
-3. 点击周配额区域：打开同一进程内可复用的 Token 详情窗口。
-4. 点击上下文容量区域：进入容量结构、项目占比和对话明细；“返回”或 `Esc` 回到上一层。
-5. 鼠标移出卡片或点击桌面：自动回缩。
-6. 拖动圆球或卡片：保存圆球锚点；展开时的屏幕避让坐标不会覆盖它。
-7. 置顶关闭：仅在 Codex 位于前台或从浮窗回到桌面时显示。
-8. 置顶开启：独立常驻，不再跟随 Codex。
+2. 右击圆球：显示原生菜单；选择“退出插件”即可彻底结束当前浮球进程。
+3. 悬停圆球：保持圆球，不自动展开。
+4. 点击周配额区域：打开同一进程内可复用的 Token 详情窗口。
+5. 点击上下文容量区域：进入容量结构、项目占比和对话明细；“返回”或 `Esc` 回到上一层。
+6. 鼠标移出卡片或点击桌面：自动回缩。
+7. 拖动圆球或卡片：保存圆球锚点；展开时的屏幕避让坐标不会覆盖它。
+8. 置顶关闭：仅在 Codex 位于前台或从浮窗回到桌面时显示。
+9. 置顶开启：独立常驻，不再跟随 Codex。
 
 ## 平台
 
@@ -112,7 +113,7 @@ dist/Codex-Quota-Orb-macOS.dmg
 
 ### Windows
 
-下载并解压 [`Codex-Quota-Orb-Windows.zip`](https://github.com/huaxing1986q-png/codex-quota-orb/releases/download/v0.4.0/Codex-Quota-Orb-Windows.zip)，在解压目录运行：
+下载并解压 [`Codex-Quota-Orb-Windows.zip`](https://github.com/huaxing1986q-png/codex-quota-orb/releases/download/v0.4.1/Codex-Quota-Orb-Windows.zip)，在解压目录运行：
 
 ```powershell
 powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\Install.ps1

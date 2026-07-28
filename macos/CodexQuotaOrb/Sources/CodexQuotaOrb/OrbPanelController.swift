@@ -12,6 +12,7 @@ protocol OrbPanelActions: AnyObject {
     func orbPanelDidRequestDetails(_ controller: OrbPanelController)
     func orbPanelDidRequestLanguage(_ controller: OrbPanelController)
     func orbPanelDidRequestPin(_ controller: OrbPanelController)
+    func orbPanelDidRequestQuit(_ controller: OrbPanelController)
     func orbPanel(_ controller: OrbPanelController, didMoveAnchor anchor: NSPoint)
 }
 
@@ -133,6 +134,10 @@ final class OrbPanelController {
         actions?.orbPanelDidRequestPin(self)
     }
 
+    fileprivate func quitFromView() {
+        actions?.orbPanelDidRequestQuit(self)
+    }
+
     private static func initialAnchor(_ preferences: WidgetPreferences) -> NSPoint {
         if preferences.hasCustomAnchor {
             return clampedAnchor(NSPoint(x: preferences.anchorX, y: preferences.anchorY))
@@ -248,6 +253,23 @@ private final class OrbView: NSView {
         } else if quotaRect.contains(point) {
             owner?.openDetailsFromView()
         }
+    }
+
+    override func rightMouseDown(with event: NSEvent) {
+        guard !isExpanded else { return }
+        let menu = NSMenu()
+        let quit = NSMenuItem(
+            title: Copy.quitPlugin(language),
+            action: #selector(quitPluginFromMenu(_:)),
+            keyEquivalent: ""
+        )
+        quit.target = self
+        menu.addItem(quit)
+        NSMenu.popUpContextMenu(menu, with: event, for: self)
+    }
+
+    @objc private func quitPluginFromMenu(_ sender: Any?) {
+        owner?.quitFromView()
     }
 
     override func draw(_ dirtyRect: NSRect) {

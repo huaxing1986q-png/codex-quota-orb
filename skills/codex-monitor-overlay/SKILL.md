@@ -47,6 +47,7 @@ When always-on-top is disabled, the orb appears while Codex or the empty desktop
 - `L`: language shortcut while the window has keyboard focus.
 - `T`: always-on-top shortcut while the window has keyboard focus.
 - Single-click the collapsed orb to expand the weekly quota card.
+- Right-click the collapsed orb to show a native menu with `退出插件` / `Exit plugin`; selecting it must terminate the current orb process without triggering expansion or drag.
 - Click the expanded weekly quota region, or press `Enter` / `Space`, to open and foreground the Codex Token usage details page. Keep the details form in the monitor's existing process so no PowerShell console is created; reuse the same form on later clicks. Do not add a separate icon for this action.
 - `Esc`: collapse the card; from the collapsed state, close the current monitor process.
 

@@ -45,6 +45,10 @@ enum Copy {
             ? "当前上下文与本机 Token 历史分开统计；两者均不用于估算官方配额。"
             : "Current context and local Token history are separate; neither estimates official quota."
     }
+
+    static func quitPlugin(_ language: AppLanguage) -> String {
+        language == .chinese ? "退出插件" : "Quit Plugin"
+    }
 }
 
 extension NSColor {
