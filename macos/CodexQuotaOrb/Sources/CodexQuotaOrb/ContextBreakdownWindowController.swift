@@ -288,20 +288,30 @@ private final class ContextBreakdownView: NSView {
         }
 
         let capacity = context.capacityTokens
-        let cached = min(capacity, max(0, context.cachedInputTokens))
-        let fresh = min(max(0, capacity - cached), max(0, context.freshInputTokens))
-        let remaining = max(0, capacity - cached - fresh)
+        let occupied = min(capacity, max(0, context.inputTokens))
+        let hasBreakdown = context.inputBreakdownAvailable
+        let cached = hasBreakdown ? min(occupied, max(0, context.cachedInputTokens)) : 0
+        let fresh = hasBreakdown ? min(max(0, occupied - cached), max(0, context.freshInputTokens)) : 0
+        let unknown = hasBreakdown ? 0 : occupied
+        let remaining = max(0, capacity - occupied)
         let cachedPercent = Double(cached) * 100 / Double(capacity)
         let freshPercent = Double(fresh) * 100 / Double(capacity)
+        let unknownPercent = Double(unknown) * 100 / Double(capacity)
         let remainingPercent = Double(remaining) * 100 / Double(capacity)
         let cachedColor = Palette.accent
         let freshColor = NSColor(calibratedRed: 112 / 255, green: 87 / 255, blue: 205 / 255, alpha: 1)
+        let unknownColor = NSColor(calibratedRed: 103 / 255, green: 116 / 255, blue: 134 / 255, alpha: 1)
         let remainingColor = statusColor(remainingPercent)
 
         let ringRect = NSRect(x: panel.minX + 66, y: panel.minY + 96, width: 174, height: 174)
         drawRing(
             in: ringRect,
-            values: [(cachedPercent, cachedColor), (freshPercent, freshColor), (remainingPercent, remainingColor)]
+            values: [
+                (cachedPercent, cachedColor),
+                (freshPercent, freshColor),
+                (unknownPercent, unknownColor),
+                (remainingPercent, remainingColor)
+            ]
         )
         let percent = String(format: "%.0f%%", context.usedPercent ?? 0)
         drawText(
@@ -336,28 +346,55 @@ private final class ContextBreakdownView: NSView {
         )
         drawStackedBar(
             in: NSRect(x: rightX, y: panel.minY + 72, width: rightWidth, height: 14),
-            values: [(cachedPercent, cachedColor), (freshPercent, freshColor), (remainingPercent, remainingColor)]
+            values: [
+                (cachedPercent, cachedColor),
+                (freshPercent, freshColor),
+                (unknownPercent, unknownColor),
+                (remainingPercent, remainingColor)
+            ]
         )
-        drawSegment(
-            x: rightX,
-            y: panel.minY + 110,
-            width: rightWidth,
-            label: language == .chinese ? "缓存输入" : "CACHED INPUT",
-            value: cached,
-            percent: cachedPercent,
-            color: cachedColor,
-            note: language == .chinese ? "属于输入子集" : "SUBSET OF INPUT"
-        )
-        drawSegment(
-            x: rightX,
-            y: panel.minY + 174,
-            width: rightWidth,
-            label: language == .chinese ? "新增输入" : "FRESH INPUT",
-            value: fresh,
-            percent: freshPercent,
-            color: freshColor,
-            note: language == .chinese ? "本轮未缓存输入" : "UNCACHED INPUT THIS TURN"
-        )
+        if hasBreakdown {
+            drawSegment(
+                x: rightX,
+                y: panel.minY + 110,
+                width: rightWidth,
+                label: language == .chinese ? "缓存输入" : "CACHED INPUT",
+                value: cached,
+                percent: cachedPercent,
+                color: cachedColor,
+                note: language == .chinese ? "属于输入子集" : "SUBSET OF INPUT"
+            )
+            drawSegment(
+                x: rightX,
+                y: panel.minY + 174,
+                width: rightWidth,
+                label: language == .chinese ? "新增输入" : "FRESH INPUT",
+                value: fresh,
+                percent: freshPercent,
+                color: freshColor,
+                note: language == .chinese ? "本轮未缓存输入" : "UNCACHED INPUT THIS TURN"
+            )
+        } else {
+            drawSegment(
+                x: rightX,
+                y: panel.minY + 110,
+                width: rightWidth,
+                label: language == .chinese ? "已占用（未拆分）" : "OCCUPIED (NOT SPLIT)",
+                value: unknown,
+                percent: unknownPercent,
+                color: unknownColor,
+                note: language == .chinese ? "压缩记录只保留总占用" : "COMPACTION KEEPS TOTAL OCCUPANCY ONLY"
+            )
+            drawSegmentText(
+                x: rightX,
+                y: panel.minY + 174,
+                width: rightWidth,
+                label: language == .chinese ? "缓存 / 新增" : "CACHED / FRESH",
+                amount: "—",
+                color: unknownColor,
+                note: language == .chinese ? "原始记录未提供明细" : "SOURCE RECORD HAS NO BREAKDOWN"
+            )
+        }
         drawSegment(
             x: rightX,
             y: panel.minY + 238,
@@ -383,10 +420,12 @@ private final class ContextBreakdownView: NSView {
             footerText = "上轮输出 \(formatTokens(context.outputTokens, language: language))"
                 + " · 推理 \(formatTokens(context.reasoningOutputTokens, language: language))（输出子集）"
                 + " · 会话累计 \(formatTokens(context.sessionTotalTokens, language: language))"
+                + contextSampleSuffix(context)
         } else {
             footerText = "LAST OUTPUT \(formatTokens(context.outputTokens, language: language))"
                 + " · REASONING \(formatTokens(context.reasoningOutputTokens, language: language)) (OUTPUT SUBSET)"
                 + " · SESSION CUMULATIVE \(formatTokens(context.sessionTotalTokens, language: language))"
+                + contextSampleSuffix(context)
         }
         drawText(
             footerText,
@@ -595,6 +634,26 @@ private final class ContextBreakdownView: NSView {
         color: NSColor,
         note: String
     ) {
+        drawSegmentText(
+            x: x,
+            y: y,
+            width: width,
+            label: label,
+            amount: formatTokens(value, language: language) + " · " + String(format: "%.1f%%", percent),
+            color: color,
+            note: note
+        )
+    }
+
+    private func drawSegmentText(
+        x: CGFloat,
+        y: CGFloat,
+        width: CGFloat,
+        label: String,
+        amount: String,
+        color: NSColor,
+        note: String
+    ) {
         color.setFill()
         NSBezierPath(rect: NSRect(x: x, y: y, width: 4, height: 42)).fill()
         drawText(
@@ -604,7 +663,7 @@ private final class ContextBreakdownView: NSView {
             color: Palette.text
         )
         drawText(
-            formatTokens(value, language: language) + " · " + String(format: "%.1f%%", percent),
+            amount,
             in: NSRect(x: x + width * 0.45, y: y - 3, width: width * 0.55, height: 23),
             font: Typography.mono(14, weight: .semibold),
             color: Palette.text,
@@ -616,6 +675,12 @@ private final class ContextBreakdownView: NSView {
             font: Typography.system(9),
             color: Palette.secondary
         )
+    }
+
+    private func contextSampleSuffix(_ context: ContextCapacitySnapshot) -> String {
+        guard let sampledAt = context.sampledAt else { return "" }
+        let time = DateFormatter.localizedString(from: sampledAt, dateStyle: .none, timeStyle: .medium)
+        return language == .chinese ? " · 上下文采样 \(time)" : " · SAMPLED \(time)"
     }
 
     private func statusColor(_ remainingPercent: Double) -> NSColor {

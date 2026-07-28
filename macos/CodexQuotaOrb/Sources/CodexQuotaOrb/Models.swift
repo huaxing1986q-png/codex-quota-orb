@@ -55,9 +55,13 @@ struct ContextCapacitySnapshot {
     var available = false
     var status = "unavailable"
     var sampledAt: Date?
+    var activityAt: Date?
+    var sessionID: String?
+    var selectionSource: String?
     var capacityTokens: Int64 = 0
     var inputTokens: Int64 = 0
     var cachedInputTokens: Int64 = 0
+    var inputBreakdownAvailable = true
     var outputTokens: Int64 = 0
     var reasoningOutputTokens: Int64 = 0
     var sessionTotalTokens: Int64 = 0

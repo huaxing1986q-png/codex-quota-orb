@@ -56,7 +56,7 @@ final class TokenHistoryService: @unchecked Sendable {
     private let calendar = Calendar.autoupdatingCurrent
     private let maxCacheBytes = 8 * 1024 * 1024
     private let maxContextTailBytes: UInt64 = 4 * 1024 * 1024
-    private let maxContextCandidateFiles = 12
+    private let maxContextCandidateFiles = 24
 
     init(store: PreferencesStore = .shared) {
         self.store = store
@@ -80,6 +80,48 @@ final class TokenHistoryService: @unchecked Sendable {
         let expectedPercent = Double(45_442) * 100 / Double(258_400)
         if abs((snapshot.usedPercent ?? -1) - expectedPercent) > 0.001 {
             failures.append("compacted context should avoid false zero percent")
+        }
+        if snapshot.inputBreakdownAvailable {
+            failures.append("compacted context should mark input breakdown unavailable")
+        }
+        if Self.activeConversationID(
+            from: "2026-07-21T04:00:00Z info thread_stream_view_activity_changed active=true conversationId=01234567-89ab-cdef-0123-456789abcdef rendererWindowAppearance=primary rendererWindowVisible=true"
+        ) != "01234567-89ab-cdef-0123-456789abcdef" {
+            failures.append("active Codex log line should expose foreground conversation")
+        }
+
+        let temporary = FileManager.default.temporaryDirectory
+            .appendingPathComponent("CodexQuotaOrb.Context.\(UUID().uuidString)", isDirectory: true)
+        do {
+            try FileManager.default.createDirectory(at: temporary, withIntermediateDirectories: true)
+            defer { try? FileManager.default.removeItem(at: temporary) }
+            let active = temporary.appendingPathComponent(
+                "rollout-2026-07-20T00-00-00-01234567-89ab-cdef-0123-456789abcdef.jsonl"
+            )
+            let background = temporary.appendingPathComponent(
+                "rollout-2026-07-20T00-00-00-aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee.jsonl"
+            )
+            let activeLines = """
+            {"timestamp":"2026-07-21T03:00:00Z","type":"event_msg","payload":{"type":"token_count","info":{"total_token_usage":{"total_tokens":300},"last_token_usage":{"input_tokens":90,"cached_input_tokens":70,"output_tokens":10,"reasoning_output_tokens":4,"total_tokens":100},"model_context_window":200}}}
+            {"timestamp":"2026-07-21T03:30:00Z","type":"event_msg","payload":{"type":"token_count","info":{"total_token_usage":{"total_tokens":300},"last_token_usage":{"input_tokens":0,"cached_input_tokens":0,"output_tokens":0,"reasoning_output_tokens":0,"total_tokens":80},"model_context_window":200}}}
+            """
+            let backgroundLines = """
+            {"timestamp":"2026-07-21T04:00:00Z","type":"event_msg","payload":{"type":"token_count","info":{"total_token_usage":{"total_tokens":77191446},"last_token_usage":{"input_tokens":0,"cached_input_tokens":0,"output_tokens":0,"reasoning_output_tokens":0,"total_tokens":62554},"model_context_window":258400}}}
+            """
+            try Data(activeLines.utf8).write(to: active)
+            try Data(backgroundLines.utf8).write(to: background)
+            let selected = selectCurrentContext(from: [background, active])
+            if selected?.sessionTotalTokens != 300 {
+                failures.append("background compaction should not replace active context")
+            }
+            if selected?.sessionID != "01234567-89ab-cdef-0123-456789abcdef" {
+                failures.append("selected context should expose source session")
+            }
+            if selected?.sampledAt != Self.isoDate("2026-07-21T03:30:00Z") {
+                failures.append("selected context should keep source sample time")
+            }
+        } catch {
+            failures.append("context selection fixture should run")
         }
         return failures
     }
@@ -192,11 +234,20 @@ final class TokenHistoryService: @unchecked Sendable {
     }
 
     private func readCurrentContext() -> ContextCapacitySnapshot {
-        let candidates = activeSessionFiles().prefix(maxContextCandidateFiles)
-        for file in candidates {
-            if let snapshot = readLatestContext(from: file) {
-                return snapshot
-            }
+        let allFiles = activeSessionFiles()
+        let preferredSessionID = readActiveConversationID()
+        var candidates = Array(allFiles.prefix(maxContextCandidateFiles))
+        if let preferredSessionID,
+           !candidates.contains(where: { sessionID(from: $0)?.caseInsensitiveCompare(preferredSessionID) == .orderedSame }),
+           let preferredFile = allFiles.first(where: { sessionID(from: $0)?.caseInsensitiveCompare(preferredSessionID) == .orderedSame })
+        {
+            candidates.append(preferredFile)
+        }
+        if let selected = selectCurrentContext(
+            from: candidates,
+            preferredSessionID: preferredSessionID
+        ) {
+            return selected
         }
         return ContextCapacitySnapshot(
             available: false,
@@ -204,7 +255,40 @@ final class TokenHistoryService: @unchecked Sendable {
         )
     }
 
-    private func readLatestContext(from file: URL) -> ContextCapacitySnapshot? {
+    private func selectCurrentContext(
+        from files: [URL],
+        preferredSessionID: String? = nil
+    ) -> ContextCapacitySnapshot? {
+        if let preferredSessionID {
+            for file in files where sessionID(from: file)?.caseInsensitiveCompare(preferredSessionID) == .orderedSame {
+                if var preferred = readContextCandidate(from: file) {
+                    preferred.selectionSource = "codex-log"
+                    return preferred
+                }
+            }
+        }
+        var best: ContextCapacitySnapshot?
+        for file in files {
+            guard let candidate = readContextCandidate(from: file) else { continue }
+            guard let current = best else {
+                best = candidate
+                continue
+            }
+            let candidateActivity = candidate.activityAt ?? .distantPast
+            let currentActivity = current.activityAt ?? .distantPast
+            let candidateSample = candidate.sampledAt ?? .distantPast
+            let currentSample = current.sampledAt ?? .distantPast
+            if candidateActivity > currentActivity
+                || (candidateActivity == currentActivity && candidateSample > currentSample)
+            {
+                best = candidate
+            }
+        }
+        best?.selectionSource = "activity"
+        return best
+    }
+
+    private func readContextCandidate(from file: URL) -> ContextCapacitySnapshot? {
         guard let handle = try? FileHandle(forReadingFrom: file) else { return nil }
         defer { try? handle.close() }
         guard let length = try? handle.seekToEnd(), length > 0 else { return nil }
@@ -212,6 +296,8 @@ final class TokenHistoryService: @unchecked Sendable {
         do {
             try handle.seek(toOffset: start)
             guard let data = try handle.readToEnd(), !data.isEmpty else { return nil }
+            var latest: ContextCapacitySnapshot?
+            var activityAt: Date?
             for rawLine in data.split(separator: 0x0A).reversed() {
                 let line = Data(rawLine)
                 guard
@@ -219,7 +305,16 @@ final class TokenHistoryService: @unchecked Sendable {
                     line.range(of: Data(#""model_context_window""#.utf8)) != nil,
                     let parsed = parseContext(line)
                 else { continue }
-                return parsed
+                if latest == nil { latest = parsed }
+                if parsed.inputBreakdownAvailable, activityAt == nil {
+                    activityAt = parsed.sampledAt
+                }
+                if latest != nil, activityAt != nil { break }
+            }
+            if var latest {
+                latest.activityAt = activityAt
+                latest.sessionID = sessionID(from: file)
+                return latest
             }
         } catch {
             return nil
@@ -239,16 +334,18 @@ final class TokenHistoryService: @unchecked Sendable {
 
         let capacity = Self.int64(info["model_context_window"])
         var input = Self.int64(last["input_tokens"])
+        let rawCached = max(0, Self.int64(last["cached_input_tokens"]))
         let lastTotal = max(0, Self.int64(last["total_tokens"]))
         let output = max(0, Self.int64(last["output_tokens"]))
+        let derivedFromCompaction = input == 0 && rawCached == 0 && lastTotal > output
         // A compaction-boundary token_count can zero its input components
         // while last total still carries the compacted context size.
         // total_tokens is input + output; reasoning is an output subset.
-        if input == 0, lastTotal > output {
+        if derivedFromCompaction {
             input = lastTotal - output
         }
         guard capacity > 0, input >= 0 else { return nil }
-        let cached = min(input, max(0, Self.int64(last["cached_input_tokens"])))
+        let cached = derivedFromCompaction ? 0 : min(input, rawCached)
         let total = info["total_token_usage"] as? [String: Any]
         return ContextCapacitySnapshot(
             available: true,
@@ -257,10 +354,83 @@ final class TokenHistoryService: @unchecked Sendable {
             capacityTokens: capacity,
             inputTokens: input,
             cachedInputTokens: cached,
+            inputBreakdownAvailable: !derivedFromCompaction,
             outputTokens: output,
             reasoningOutputTokens: max(0, Self.int64(last["reasoning_output_tokens"])),
             sessionTotalTokens: max(0, Self.int64(total?["total_tokens"]))
         )
+    }
+
+    private func sessionID(from file: URL) -> String? {
+        let name = file.deletingPathExtension().lastPathComponent
+        guard name.count >= 36 else { return nil }
+        let candidate = String(name.suffix(36))
+        return UUID(uuidString: candidate) == nil ? nil : candidate
+    }
+
+    private func readActiveConversationID() -> String? {
+        let home = FileManager.default.homeDirectoryForCurrentUser
+        let roots = [
+            home.appendingPathComponent("Library/Logs/Codex", isDirectory: true),
+            home.appendingPathComponent("Library/Logs/OpenAI/Codex", isDirectory: true),
+            home.appendingPathComponent("Library/Logs/com.openai.codex", isDirectory: true),
+            home.appendingPathComponent("Library/Application Support/Codex/Logs", isDirectory: true),
+            home.appendingPathComponent("Library/Logs", isDirectory: true)
+        ]
+        let keys: Set<URLResourceKey> = [.isRegularFileKey, .contentModificationDateKey]
+        var logs: [(URL, Date)] = []
+        var seen = Set<String>()
+        for root in roots {
+            guard let enumerator = FileManager.default.enumerator(
+                at: root,
+                includingPropertiesForKeys: Array(keys),
+                options: [.skipsHiddenFiles, .skipsPackageDescendants]
+            ) else { continue }
+            for case let url as URL in enumerator
+                where url.pathExtension.lowercased() == "log"
+                    && url.lastPathComponent.lowercased().hasPrefix("codex-desktop-")
+            {
+                guard seen.insert(url.standardizedFileURL.path).inserted,
+                      let values = try? url.resourceValues(forKeys: keys),
+                      values.isRegularFile == true
+                else { continue }
+                logs.append((url, values.contentModificationDate ?? .distantPast))
+            }
+        }
+        logs.sort {
+            if $0.1 != $1.1 { return $0.1 > $1.1 }
+            return $0.0.path > $1.0.path
+        }
+        for (url, _) in logs.prefix(8) {
+            guard let handle = try? FileHandle(forReadingFrom: url) else { continue }
+            defer { try? handle.close() }
+            guard let length = try? handle.seekToEnd(), length > 0 else { continue }
+            let start = length > 2 * 1024 * 1024 ? length - 2 * 1024 * 1024 : 0
+            do {
+                try handle.seek(toOffset: start)
+                guard let data = try handle.readToEnd(), !data.isEmpty else { continue }
+                for rawLine in data.split(separator: 0x0A).reversed() {
+                    guard let line = String(data: rawLine, encoding: .utf8),
+                          let conversationID = Self.activeConversationID(from: line)
+                    else { continue }
+                    return conversationID
+                }
+            } catch {
+                continue
+            }
+        }
+        return nil
+    }
+
+    private static func activeConversationID(from line: String) -> String? {
+        guard line.contains("thread_stream_view_activity_changed active=true"),
+              line.contains("rendererWindowAppearance=primary"),
+              line.contains("rendererWindowVisible=true"),
+              let marker = line.range(of: "conversationId=")
+        else { return nil }
+        let tail = line[marker.upperBound...]
+        let candidate = String(tail.prefix { !$0.isWhitespace })
+        return UUID(uuidString: candidate) == nil ? nil : candidate
     }
 
     private func activeSessionFiles() -> [URL] {

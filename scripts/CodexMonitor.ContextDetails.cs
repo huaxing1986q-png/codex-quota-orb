@@ -371,18 +371,24 @@ namespace CodexMonitor
             }
 
             long capacity = context.CapacityTokens;
-            long cached = Math.Min(capacity, Math.Max(0, context.CachedInputTokens));
-            long fresh = Math.Min(Math.Max(0, capacity - cached), Math.Max(0, context.FreshInputTokens));
-            long remaining = Math.Max(0, capacity - cached - fresh);
+            long occupied = Math.Min(capacity, Math.Max(0, context.InputTokens));
+            bool hasBreakdown = context.InputBreakdownAvailable;
+            long cached = hasBreakdown ? Math.Min(occupied, Math.Max(0, context.CachedInputTokens)) : 0;
+            long fresh = hasBreakdown ? Math.Min(Math.Max(0, occupied - cached), Math.Max(0, context.FreshInputTokens)) : 0;
+            long unknown = hasBreakdown ? 0 : occupied;
+            long remaining = Math.Max(0, capacity - occupied);
             double cachedPercent = cached * 100d / capacity;
             double freshPercent = fresh * 100d / capacity;
+            double unknownPercent = unknown * 100d / capacity;
             double remainingPercent = remaining * 100d / capacity;
             Color cachedColor = Color.FromArgb(57, 122, 224);
             Color freshColor = Color.FromArgb(112, 87, 205);
+            Color unknownColor = Color.FromArgb(103, 116, 134);
             Color remainingColor = RemainingColor(remainingPercent);
 
             DrawRing(g, new Rectangle(panel.X + 48, panel.Y + 78, 210, 210),
-                cachedPercent, freshPercent, remainingPercent, cachedColor, freshColor, remainingColor);
+                cachedPercent, freshPercent, unknownPercent, remainingPercent,
+                cachedColor, freshColor, unknownColor, remainingColor);
             using (SolidBrush ink = new SolidBrush(Color.FromArgb(23, 29, 37)))
             using (SolidBrush secondary = new SolidBrush(Color.FromArgb(75, 87, 101)))
             {
@@ -402,11 +408,24 @@ namespace CodexMonitor
             using (SolidBrush ink = new SolidBrush(Color.FromArgb(23, 29, 37)))
                 g.DrawString(chinese ? "容量构成" : "Capacity structure", sectionFont, ink, rightX, panel.Y + 34);
             DrawStackedBar(g, new Rectangle(rightX, panel.Y + 72, rightWidth, 14),
-                cachedPercent, freshPercent, remainingPercent, cachedColor, freshColor, remainingColor);
-            DrawSegmentRow(g, rightX, panel.Y + 110, rightWidth, chinese ? "缓存输入" : "Cached input",
-                cached, cachedPercent, cachedColor, chinese ? "属于输入子集" : "subset of input");
-            DrawSegmentRow(g, rightX, panel.Y + 174, rightWidth, chinese ? "新增输入" : "Fresh input",
-                fresh, freshPercent, freshColor, chinese ? "本轮未缓存输入" : "uncached input this turn");
+                cachedPercent, freshPercent, unknownPercent, remainingPercent,
+                cachedColor, freshColor, unknownColor, remainingColor);
+            if (hasBreakdown)
+            {
+                DrawSegmentRow(g, rightX, panel.Y + 110, rightWidth, chinese ? "缓存输入" : "Cached input",
+                    cached, cachedPercent, cachedColor, chinese ? "属于输入子集" : "subset of input");
+                DrawSegmentRow(g, rightX, panel.Y + 174, rightWidth, chinese ? "新增输入" : "Fresh input",
+                    fresh, freshPercent, freshColor, chinese ? "本轮未缓存输入" : "uncached input this turn");
+            }
+            else
+            {
+                DrawSegmentRow(g, rightX, panel.Y + 110, rightWidth, chinese ? "已占用（未拆分）" : "Occupied (not split)",
+                    unknown, unknownPercent, unknownColor,
+                    chinese ? "压缩记录只保留总占用" : "compaction record keeps total occupancy only");
+                DrawSegmentTextRow(g, rightX, panel.Y + 174, rightWidth, chinese ? "缓存 / 新增" : "Cached / fresh",
+                    "—", unknownColor,
+                    chinese ? "原始记录未提供明细" : "source record has no breakdown");
+            }
             DrawSegmentRow(g, rightX, panel.Y + 238, rightWidth, chinese ? "剩余容量" : "Remaining",
                 remaining, remainingPercent, remainingColor, Guidance(remainingPercent));
 
@@ -423,14 +442,17 @@ namespace CodexMonitor
                     ? "上轮输出 " + FormatTokens(context.OutputTokens, true)
                         + " · 推理 " + FormatTokens(context.ReasoningOutputTokens, true)
                         + "（输出子集） · 会话累计 " + FormatTokens(context.SessionTotalTokens, true)
+                        + ContextSampleSuffix(context, true)
                     : "Last output " + FormatTokens(context.OutputTokens, false)
                         + " · reasoning " + FormatTokens(context.ReasoningOutputTokens, false)
-                        + " (output subset) · session cumulative " + FormatTokens(context.SessionTotalTokens, false);
+                        + " (output subset) · session cumulative " + FormatTokens(context.SessionTotalTokens, false)
+                        + ContextSampleSuffix(context, false);
                 g.DrawString(values, metaFont, secondary, new RectangleF(footer.X + 16, footer.Y + 37, footer.Width - 32, 18));
             }
         }
 
-        private void DrawRing(Graphics g, Rectangle bounds, double cached, double fresh, double remaining, Color cachedColor, Color freshColor, Color remainingColor)
+        private void DrawRing(Graphics g, Rectangle bounds, double cached, double fresh, double unknown, double remaining,
+            Color cachedColor, Color freshColor, Color unknownColor, Color remainingColor)
         {
             Rectangle ring = new Rectangle(bounds.X + 18, bounds.Y + 18, bounds.Width - 36, bounds.Height - 36);
             using (Pen track = new Pen(Color.FromArgb(225, 232, 237), 24f))
@@ -438,6 +460,7 @@ namespace CodexMonitor
             float start = -90f;
             DrawRingSegment(g, ring, ref start, cached, cachedColor);
             DrawRingSegment(g, ring, ref start, fresh, freshColor);
+            DrawRingSegment(g, ring, ref start, unknown, unknownColor);
             DrawRingSegment(g, ring, ref start, remaining, remainingColor);
         }
 
@@ -450,23 +473,33 @@ namespace CodexMonitor
             start += sweep;
         }
 
-        private void DrawStackedBar(Graphics g, Rectangle bounds, double cached, double fresh, double remaining, Color cachedColor, Color freshColor, Color remainingColor)
+        private void DrawStackedBar(Graphics g, Rectangle bounds, double cached, double fresh, double unknown, double remaining,
+            Color cachedColor, Color freshColor, Color unknownColor, Color remainingColor)
         {
             using (GraphicsPath track = RoundedRect(bounds, 7))
             using (SolidBrush trackFill = new SolidBrush(Color.FromArgb(226, 233, 238)))
                 g.FillPath(trackFill, track);
             int cachedWidth = (int)Math.Round(bounds.Width * cached / 100d);
             int freshWidth = (int)Math.Round(bounds.Width * fresh / 100d);
-            int remainingWidth = Math.Max(0, bounds.Width - cachedWidth - freshWidth);
+            int unknownWidth = (int)Math.Round(bounds.Width * unknown / 100d);
+            int remainingWidth = Math.Max(0, bounds.Width - cachedWidth - freshWidth - unknownWidth);
             if (cachedWidth > 0)
                 using (SolidBrush fill = new SolidBrush(cachedColor)) g.FillRectangle(fill, bounds.X, bounds.Y, cachedWidth, bounds.Height);
             if (freshWidth > 0)
                 using (SolidBrush fill = new SolidBrush(freshColor)) g.FillRectangle(fill, bounds.X + cachedWidth, bounds.Y, freshWidth, bounds.Height);
+            if (unknownWidth > 0)
+                using (SolidBrush fill = new SolidBrush(unknownColor)) g.FillRectangle(fill, bounds.X + cachedWidth + freshWidth, bounds.Y, unknownWidth, bounds.Height);
             if (remainingWidth > 0)
-                using (SolidBrush fill = new SolidBrush(remainingColor)) g.FillRectangle(fill, bounds.X + cachedWidth + freshWidth, bounds.Y, remainingWidth, bounds.Height);
+                using (SolidBrush fill = new SolidBrush(remainingColor)) g.FillRectangle(fill, bounds.X + cachedWidth + freshWidth + unknownWidth, bounds.Y, remainingWidth, bounds.Height);
         }
 
         private void DrawSegmentRow(Graphics g, int x, int y, int width, string label, long value, double percent, Color color, string note)
+        {
+            string amount = FormatTokens(value, chinese) + " · " + percent.ToString("0.0", CultureInfo.CurrentCulture) + "%";
+            DrawSegmentTextRow(g, x, y, width, label, amount, color, note);
+        }
+
+        private void DrawSegmentTextRow(Graphics g, int x, int y, int width, string label, string amount, Color color, string note)
         {
             using (SolidBrush strip = new SolidBrush(color))
                 g.FillRectangle(strip, x, y, 4, 42);
@@ -474,11 +507,17 @@ namespace CodexMonitor
             using (SolidBrush secondary = new SolidBrush(Color.FromArgb(75, 87, 101)))
             {
                 g.DrawString(label, labelFont, ink, x + 16, y);
-                string amount = FormatTokens(value, chinese) + " · " + percent.ToString("0.0", CultureInfo.CurrentCulture) + "%";
                 SizeF amountSize = g.MeasureString(amount, valueFont);
                 g.DrawString(amount, valueFont, ink, x + width - amountSize.Width, y - 4);
                 g.DrawString(note, metaFont, secondary, x + 16, y + 25);
             }
+        }
+
+        private static string ContextSampleSuffix(ContextCapacitySnapshot context, bool chinese)
+        {
+            if (context == null || context.SampleUtc == DateTime.MinValue) return String.Empty;
+            string time = context.SampleUtc.ToLocalTime().ToString("HH:mm:ss", CultureInfo.CurrentCulture);
+            return chinese ? " · 上下文采样 " + time : " · sampled " + time;
         }
 
         private string Guidance(double remainingPercent)

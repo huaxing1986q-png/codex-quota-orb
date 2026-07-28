@@ -4,6 +4,7 @@ using System.Diagnostics;
 using System.Globalization;
 using System.IO;
 using System.Text;
+using System.Text.RegularExpressions;
 using System.Web.Script.Serialization;
 
 namespace CodexMonitor
@@ -19,9 +20,13 @@ namespace CodexMonitor
         public bool Available;
         public string Status = "unavailable";
         public DateTime SampleUtc;
+        public DateTime ActivityUtc;
+        public string SessionId;
+        public string SelectionSource;
         public long CapacityTokens;
         public long InputTokens;
         public long CachedInputTokens;
+        public bool InputBreakdownAvailable = true;
         public long OutputTokens;
         public long ReasoningOutputTokens;
         public long SessionTotalTokens;
@@ -104,7 +109,7 @@ namespace CodexMonitor
         private const int MaxCacheBytes = 8 * 1024 * 1024;
         private const int StreamBufferBytes = 128 * 1024;
         private const int MaxContextTailBytes = 4 * 1024 * 1024;
-        private const int MaxContextCandidateFiles = 12;
+        private const int MaxContextCandidateFiles = 24;
         private static readonly JavaScriptSerializer Json = new JavaScriptSerializer { MaxJsonLength = MaxCacheBytes };
 
         public static string ReadLatestJson(string sessionsRoot, string cachePath)
@@ -130,12 +135,15 @@ namespace CodexMonitor
                 { "capacity_tokens", snapshot.Context.CapacityTokens },
                 { "input_tokens", snapshot.Context.InputTokens },
                 { "cached_input_tokens", snapshot.Context.CachedInputTokens },
-                { "fresh_input_tokens", snapshot.Context.FreshInputTokens },
+                { "fresh_input_tokens", snapshot.Context.InputBreakdownAvailable ? (object)snapshot.Context.FreshInputTokens : null },
+                { "input_breakdown_available", snapshot.Context.InputBreakdownAvailable },
                 { "remaining_tokens", snapshot.Context.RemainingTokens },
                 { "used_percent", snapshot.Context.UsedPercent },
                 { "output_tokens", snapshot.Context.OutputTokens },
                 { "reasoning_output_tokens", snapshot.Context.ReasoningOutputTokens },
                 { "session_total_tokens", snapshot.Context.SessionTotalTokens },
+                { "session_id", snapshot.Context.SessionId },
+                { "selection_source", snapshot.Context.SelectionSource },
                 { "sample_utc", snapshot.Context.SampleUtc == DateTime.MinValue ? null : (object)snapshot.Context.SampleUtc.ToString("o") }
             };
             return Json.Serialize(output);
@@ -263,6 +271,7 @@ namespace CodexMonitor
                 Assert(failures, parsed.Context.Available, "context fixture available");
                 Assert(failures, parsed.Context.CapacityTokens == 200 && parsed.Context.InputTokens == 90, "context capacity and input");
                 Assert(failures, parsed.Context.CachedInputTokens == 70 && parsed.Context.FreshInputTokens == 20, "context input structure");
+                Assert(failures, parsed.Context.InputBreakdownAvailable, "normal context input breakdown available");
                 Assert(failures, parsed.Context.RemainingTokens == 110 && Math.Abs(parsed.Context.UsedPercent - 45) < 0.001, "context remaining and percent");
                 Assert(failures, parsed.Context.OutputTokens == 10 && parsed.Context.ReasoningOutputTokens == 4, "context output structure");
                 Assert(failures, parsed.Context.SessionTotalTokens == 300, "context session cumulative");
@@ -271,11 +280,29 @@ namespace CodexMonitor
                 Assert(failures, TryParseContextLine(compactedLine, out compacted), "compacted context fixture parses");
                 Assert(failures, compacted != null && compacted.InputTokens == 45442, "compacted context derives occupied input from last total");
                 Assert(failures, compacted != null && Math.Abs(compacted.UsedPercent - (45442d * 100d / 258400d)) < 0.001, "compacted context avoids false zero percent");
+                Assert(failures, compacted != null && !compacted.InputBreakdownAvailable, "compacted context marks input breakdown unavailable");
+                string activeCompactedLine = "{\"timestamp\":\"2026-07-21T03:30:00Z\",\"type\":\"event_msg\",\"payload\":{\"type\":\"token_count\",\"info\":{\"total_token_usage\":{\"total_tokens\":300},\"last_token_usage\":{\"input_tokens\":0,\"cached_input_tokens\":0,\"output_tokens\":0,\"reasoning_output_tokens\":0,\"total_tokens\":80},\"model_context_window\":200}}}";
+                File.AppendAllText(session, Environment.NewLine + activeCompactedLine, new UTF8Encoding(false));
+                string background = Path.Combine(root, "rollout-2026-07-20T00-00-00-aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee.jsonl");
+                File.WriteAllLines(background, new[] {
+                    "{\"timestamp\":\"2026-07-20T00:00:00Z\",\"type\":\"session_meta\",\"payload\":{\"id\":\"aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee\",\"cwd\":\"C:\\\\work\\\\background\"}}",
+                    "{\"timestamp\":\"2026-07-21T04:00:00Z\",\"type\":\"event_msg\",\"payload\":{\"type\":\"token_count\",\"info\":{\"total_token_usage\":{\"total_tokens\":77191446},\"last_token_usage\":{\"input_tokens\":0,\"cached_input_tokens\":0,\"output_tokens\":0,\"reasoning_output_tokens\":0,\"total_tokens\":62554},\"model_context_window\":258400}}}"
+                }, new UTF8Encoding(false));
+                ContextCapacitySnapshot selected = ReadCurrentContext(root);
+                Assert(failures, selected != null && selected.SessionTotalTokens == 300, "background compaction does not replace active context");
+                Assert(failures, selected != null && selected.SampleUtc == DateTime.Parse("2026-07-21T03:30:00Z", CultureInfo.InvariantCulture, DateTimeStyles.AssumeUniversal | DateTimeStyles.AdjustToUniversal), "selected context keeps source sample time");
+                string parsedConversationId;
+                Assert(failures,
+                    TryParseActiveConversationLine("2026-07-21T04:00:00Z info thread_stream_view_activity_changed active=true conversationId=01234567-89ab-cdef-0123-456789abcdef rendererWindowAppearance=primary rendererWindowVisible=true", out parsedConversationId)
+                        && parsedConversationId == "01234567-89ab-cdef-0123-456789abcdef",
+                    "active Codex log line exposes foreground conversation");
                 Assert(failures, parsed.Projects.Count == 1 && parsed.Projects[0].Tokens == 300 && parsed.Projects[0].Conversations == 1, "project aggregation");
                 Assert(failures, parsed.Conversations.Count == 1 && parsed.Conversations[0].SessionId.StartsWith("01234567"), "conversation aggregation");
                 TokenHistorySnapshot reused = ReadLatest(root, cache, null);
-                Assert(failures, reused.ReusedFiles == 1, "history cache reuse");
-                return 16;
+                Assert(failures, reused.ReusedFiles == 0, "changed history files are rescanned");
+                TokenHistorySnapshot reusedAgain = ReadLatest(root, cache, null);
+                Assert(failures, reusedAgain.ReusedFiles == 2, "history cache reuse");
+                return 22;
             }
             finally
             {
@@ -323,11 +350,44 @@ namespace CodexMonitor
                     int modified = right.LastWriteTimeUtc.CompareTo(left.LastWriteTimeUtc);
                     return modified != 0 ? modified : StringComparer.OrdinalIgnoreCase.Compare(right.FullName, left.FullName);
                 });
+                string activeConversationId;
+                if (TryReadActiveConversationId(out activeConversationId))
+                {
+                    for (int index = 0; index < files.Count; index++)
+                    {
+                        if (files[index].Name.IndexOf(activeConversationId, StringComparison.OrdinalIgnoreCase) < 0) continue;
+                        ContextCapacitySnapshot active;
+                        DateTime activityUtc;
+                        if (TryReadLatestContext(files[index], out active, out activityUtc))
+                        {
+                            active.SelectionSource = "codex-log";
+                            return active;
+                        }
+                    }
+                }
                 int count = Math.Min(MaxContextCandidateFiles, files.Count);
+                ContextCapacitySnapshot best = null;
+                DateTime bestActivity = DateTime.MinValue;
+                DateTime bestSample = DateTime.MinValue;
                 for (int index = 0; index < count; index++)
                 {
                     ContextCapacitySnapshot parsed;
-                    if (TryReadLatestContext(files[index], out parsed)) return parsed;
+                    DateTime activityUtc;
+                    if (!TryReadLatestContext(files[index], out parsed, out activityUtc)) continue;
+                    DateTime sampleUtc = parsed.SampleUtc;
+                    if (best == null
+                        || activityUtc > bestActivity
+                        || (activityUtc == bestActivity && sampleUtc > bestSample))
+                    {
+                        best = parsed;
+                        bestActivity = activityUtc;
+                        bestSample = sampleUtc;
+                    }
+                }
+                if (best != null)
+                {
+                    best.SelectionSource = "activity";
+                    return best;
                 }
                 unavailable.Status = files.Count == 0 ? "empty" : "unavailable";
                 return unavailable;
@@ -335,9 +395,10 @@ namespace CodexMonitor
             catch { return unavailable; }
         }
 
-        private static bool TryReadLatestContext(FileInfo file, out ContextCapacitySnapshot snapshot)
+        private static bool TryReadLatestContext(FileInfo file, out ContextCapacitySnapshot snapshot, out DateTime activityUtc)
         {
             snapshot = null;
+            activityUtc = DateTime.MinValue;
             try
             {
                 byte[] buffer;
@@ -366,12 +427,27 @@ namespace CodexMonitor
                     ContextCapacitySnapshot parsed;
                     if (TryParseContextLine(line, out parsed))
                     {
-                        snapshot = parsed;
-                        return true;
+                        if (snapshot == null)
+                        {
+                            snapshot = parsed;
+                            snapshot.SessionId = SessionIdFromFile(file);
+                        }
+                        if (parsed.InputBreakdownAvailable && activityUtc == DateTime.MinValue)
+                            activityUtc = parsed.SampleUtc;
+                        if (snapshot != null && activityUtc != DateTime.MinValue)
+                        {
+                            snapshot.ActivityUtc = activityUtc;
+                            return true;
+                        }
                     }
                 }
             }
             catch { }
+            if (snapshot != null)
+            {
+                snapshot.ActivityUtc = activityUtc;
+                return true;
+            }
             return false;
         }
 
@@ -389,13 +465,18 @@ namespace CodexMonitor
                 Dictionary<string, object> last = Value(info, "last_token_usage") as Dictionary<string, object>;
                 long capacity = LongValue(info, "model_context_window");
                 long input = LongValue(last, "input_tokens");
+                long rawCached = Math.Max(0, LongValue(last, "cached_input_tokens"));
                 long lastTotal = Math.Max(0, LongValue(last, "total_tokens"));
                 long output = Math.Max(0, LongValue(last, "output_tokens"));
+                long reasoning = Math.Max(0, LongValue(last, "reasoning_output_tokens"));
+                bool derivedFromCompaction = input == 0
+                    && rawCached == 0
+                    && lastTotal > output;
                 // A compaction-boundary token_count can zero its input components
                 // while last total still carries the compacted context size.
                 // total_tokens is input + output; reasoning is an output subset.
                 // Never use cumulative total_token_usage as context occupancy.
-                if (input == 0 && lastTotal > output) input = lastTotal - output;
+                if (derivedFromCompaction) input = lastTotal - output;
                 if (capacity <= 0 || input < 0) return false;
 
                 DateTime sampleUtc;
@@ -403,7 +484,7 @@ namespace CodexMonitor
                 if (!DateTime.TryParse(timestamp, CultureInfo.InvariantCulture, DateTimeStyles.AssumeUniversal | DateTimeStyles.AdjustToUniversal, out sampleUtc))
                     sampleUtc = DateTime.MinValue;
 
-                long cached = Math.Max(0, Math.Min(input, LongValue(last, "cached_input_tokens")));
+                long cached = derivedFromCompaction ? 0 : Math.Max(0, Math.Min(input, rawCached));
                 snapshot = new ContextCapacitySnapshot {
                     Available = true,
                     Status = "ok",
@@ -411,13 +492,109 @@ namespace CodexMonitor
                     CapacityTokens = capacity,
                     InputTokens = input,
                     CachedInputTokens = cached,
+                    InputBreakdownAvailable = !derivedFromCompaction,
                     OutputTokens = output,
-                    ReasoningOutputTokens = Math.Max(0, LongValue(last, "reasoning_output_tokens")),
+                    ReasoningOutputTokens = reasoning,
                     SessionTotalTokens = Math.Max(0, LongValue(total, "total_tokens"))
                 };
                 return true;
             }
             catch { return false; }
+        }
+
+        private static string SessionIdFromFile(FileInfo file)
+        {
+            try
+            {
+                string name = Path.GetFileNameWithoutExtension(file.Name);
+                if (name.Length >= 36)
+                {
+                    string candidate = name.Substring(name.Length - 36);
+                    Guid parsed;
+                    if (Guid.TryParse(candidate, out parsed)) return candidate;
+                }
+            }
+            catch { }
+            return null;
+        }
+
+        private static bool TryReadActiveConversationId(out string conversationId)
+        {
+            conversationId = null;
+            try
+            {
+                List<FileInfo> logs = new List<FileInfo>();
+                string local = Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData);
+                string roaming = Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData);
+                string[] roots = new[] {
+                    Path.Combine(local, "Packages", "OpenAI.Codex_2p2nqsd0c76g0", "LocalCache", "Local", "Codex", "Logs"),
+                    Path.Combine(local, "Codex", "Logs"),
+                    Path.Combine(roaming, "Codex", "Logs")
+                };
+                HashSet<string> seen = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+                foreach (string root in roots)
+                {
+                    if (String.IsNullOrWhiteSpace(root) || !Directory.Exists(root)) continue;
+                    try
+                    {
+                        foreach (string path in Directory.EnumerateFiles(root, "*.log", SearchOption.AllDirectories))
+                        {
+                            if (seen.Add(path)) logs.Add(new FileInfo(path));
+                        }
+                    }
+                    catch { }
+                }
+                logs.Sort(delegate(FileInfo left, FileInfo right) {
+                    return right.LastWriteTimeUtc.CompareTo(left.LastWriteTimeUtc);
+                });
+                int count = Math.Min(8, logs.Count);
+                for (int index = 0; index < count; index++)
+                {
+                    byte[] buffer;
+                    int bytesRead;
+                    using (FileStream stream = new FileStream(logs[index].FullName, FileMode.Open, FileAccess.Read, FileShare.ReadWrite | FileShare.Delete))
+                    {
+                        int length = (int)Math.Min(stream.Length, 2 * 1024 * 1024);
+                        if (length <= 0) continue;
+                        buffer = new byte[length];
+                        stream.Seek(-length, SeekOrigin.End);
+                        bytesRead = 0;
+                        while (bytesRead < length)
+                        {
+                            int read = stream.Read(buffer, bytesRead, length - bytesRead);
+                            if (read <= 0) break;
+                            bytesRead += read;
+                        }
+                    }
+                    string[] lines = Encoding.UTF8.GetString(buffer, 0, bytesRead).Split('\n');
+                    for (int lineIndex = lines.Length - 1; lineIndex >= 0; lineIndex--)
+                    {
+                        string parsed;
+                        if (TryParseActiveConversationLine(lines[lineIndex], out parsed))
+                        {
+                            conversationId = parsed;
+                            return true;
+                        }
+                    }
+                }
+            }
+            catch { }
+            return false;
+        }
+
+        private static bool TryParseActiveConversationLine(string line, out string conversationId)
+        {
+            conversationId = null;
+            if (String.IsNullOrWhiteSpace(line)
+                || line.IndexOf("thread_stream_view_activity_changed active=true", StringComparison.Ordinal) < 0
+                || line.IndexOf("rendererWindowAppearance=primary", StringComparison.Ordinal) < 0
+                || line.IndexOf("rendererWindowVisible=true", StringComparison.Ordinal) < 0) return false;
+            Match match = Regex.Match(line,
+                @"conversationId=([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12})",
+                RegexOptions.CultureInvariant);
+            if (!match.Success) return false;
+            conversationId = match.Groups[1].Value;
+            return true;
         }
 
         private static ConversationTokenUsage ReadConversation(FileInfo file, long tokens)

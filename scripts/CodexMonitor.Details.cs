@@ -459,22 +459,31 @@ namespace CodexMonitor
                     available ? FormatTokens(context.RemainingTokens, chinese) : "—");
                 DrawContextValue(g, detailsX + cellWidth * 2, panel.Y + 38, cellWidth,
                     chinese ? "缓存复用" : "Cached input",
-                    available ? FormatTokens(context.CachedInputTokens, chinese) : "—");
+                    available && context.InputBreakdownAvailable ? FormatTokens(context.CachedInputTokens, chinese) : "—");
                 DrawContextValue(g, detailsX + cellWidth * 3, panel.Y + 38, Math.Max(80, detailsWidth - cellWidth * 3),
                     chinese ? "新增输入" : "Fresh input",
-                    available ? FormatTokens(context.FreshInputTokens, chinese) : "—");
+                    available && context.InputBreakdownAvailable ? FormatTokens(context.FreshInputTokens, chinese) : "—");
 
                 string footer = available
                     ? (chinese
                         ? "上轮输出 " + FormatTokens(context.OutputTokens, true)
                             + " · 推理 " + FormatTokens(context.ReasoningOutputTokens, true)
                             + "（输出子集） · 会话累计 " + FormatTokens(context.SessionTotalTokens, true)
+                            + ContextSampleSuffix(context, true)
                         : "Last output " + FormatTokens(context.OutputTokens, false)
                             + " · reasoning " + FormatTokens(context.ReasoningOutputTokens, false)
-                            + " (output subset) · session cumulative " + FormatTokens(context.SessionTotalTokens, false))
+                            + " (output subset) · session cumulative " + FormatTokens(context.SessionTotalTokens, false)
+                            + ContextSampleSuffix(context, false))
                     : (chinese ? "仅显示当前活动会话的最新数值记录" : "Uses the newest numeric record from the current active session");
                 g.DrawString(footer, metaFont, secondary, detailsX, panel.Bottom - 30);
             }
+        }
+
+        private static string ContextSampleSuffix(ContextCapacitySnapshot context, bool chinese)
+        {
+            if (context == null || context.SampleUtc == DateTime.MinValue) return String.Empty;
+            string time = context.SampleUtc.ToLocalTime().ToString("HH:mm:ss", CultureInfo.CurrentCulture);
+            return chinese ? " · 上下文采样 " + time : " · context sampled " + time;
         }
 
         private void DrawContextValue(Graphics g, int x, int y, int width, string label, string value)

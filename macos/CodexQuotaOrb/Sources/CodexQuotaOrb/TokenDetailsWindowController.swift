@@ -399,14 +399,18 @@ private final class TokenDetailsView: NSView {
             y: rect.minY + 38,
             width: cellWidth,
             label: language == .chinese ? "缓存复用" : "CACHED INPUT",
-            value: context.available ? formatTokens(context.cachedInputTokens, language: language) : "—"
+            value: context.available && context.inputBreakdownAvailable
+                ? formatTokens(context.cachedInputTokens, language: language)
+                : "—"
         )
         drawContextValue(
             x: detailsX + cellWidth * 3,
             y: rect.minY + 38,
             width: max(80, detailsWidth - cellWidth * 3),
             label: language == .chinese ? "新增输入" : "FRESH INPUT",
-            value: context.available ? formatTokens(context.freshInputTokens, language: language) : "—"
+            value: context.available && context.inputBreakdownAvailable
+                ? formatTokens(context.freshInputTokens, language: language)
+                : "—"
         )
 
         let footer: String
@@ -415,10 +419,12 @@ private final class TokenDetailsView: NSView {
                 footer = "上轮输出 \(formatTokens(context.outputTokens, language: language))"
                     + " · 推理 \(formatTokens(context.reasoningOutputTokens, language: language))（输出子集）"
                     + " · 会话累计 \(formatTokens(context.sessionTotalTokens, language: language))"
+                    + contextSampleSuffix(context)
             } else {
                 footer = "LAST OUTPUT \(formatTokens(context.outputTokens, language: language))"
                     + " · REASONING \(formatTokens(context.reasoningOutputTokens, language: language)) (OUTPUT SUBSET)"
                     + " · SESSION CUMULATIVE \(formatTokens(context.sessionTotalTokens, language: language))"
+                    + contextSampleSuffix(context)
             }
         } else {
             footer = language == .chinese
@@ -453,6 +459,12 @@ private final class TokenDetailsView: NSView {
         if usedPercent <= 50 { return Palette.healthy }
         if usedPercent <= 90 { return Palette.caution }
         return Palette.critical
+    }
+
+    private func contextSampleSuffix(_ context: ContextCapacitySnapshot) -> String {
+        guard let sampledAt = context.sampledAt else { return "" }
+        let time = DateFormatter.localizedString(from: sampledAt, dateStyle: .none, timeStyle: .medium)
+        return language == .chinese ? " · 上下文采样 \(time)" : " · CONTEXT SAMPLED \(time)"
     }
 
     private func contextGuidance(_ usedPercent: Double?) -> String {
