@@ -227,7 +227,21 @@ namespace CodexMonitor
                     failures.Add("corner expansion stays on-screen");
                 if (collapsed.Location != cornerAnchor || collapsed.Size != new Size(48, 48))
                     failures.Add("collapse returns to orb anchor");
-                return 4;
+                double[] roundedShares = ContextBreakdownForm.ReconciledPercentShares(
+                    new long[] { 671400, 665500, 608600, 530700, 504700, 493300, 466300, 439200, 240700, 176000,
+                        141900, 137300, 129200, 122500, 110000, 75200, 67800, 30900, 28500, 27200 },
+                    5666900);
+                double roundedTotal = 0;
+                foreach (double share in roundedShares) roundedTotal += share;
+                if (Math.Abs(roundedTotal - 100d) > 0.0001)
+                    failures.Add("displayed total shares reconcile to 100.00 percent");
+                double[] partialShares = ContextBreakdownForm.ReconciledPercentShares(new long[] { 25, 25 }, 100);
+                if (Math.Abs(partialShares[0] + partialShares[1] - 50d) > 0.0001)
+                    failures.Add("share reconciliation preserves a real denominator mismatch");
+                double[] emptyShares = ContextBreakdownForm.ReconciledPercentShares(new long[] { 0, 0 }, 0);
+                if (emptyShares.Length != 2 || emptyShares[0] != 0 || emptyShares[1] != 0)
+                    failures.Add("zero total shares remain zero");
+                return 7;
             }
             finally
             {

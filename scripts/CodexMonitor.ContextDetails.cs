@@ -217,12 +217,12 @@ namespace CodexMonitor
         {
             projectsList.BeginUpdate();
             projectsList.Columns.Clear();
-            projectsList.Columns.Add(chinese ? "项目" : "Project", Scale(130));
-            projectsList.Columns.Add(chinese ? "项目路径" : "Project path", Scale(270));
+            projectsList.Columns.Add(chinese ? "项目" : "Project", Scale(125));
+            projectsList.Columns.Add(chinese ? "项目路径" : "Project path", Scale(250));
             projectsList.Columns.Add(chinese ? "已占用" : "Occupied", Scale(90), HorizontalAlignment.Right);
             projectsList.Columns.Add(chinese ? "总容量" : "Capacity", Scale(90), HorizontalAlignment.Right);
             projectsList.Columns.Add(chinese ? "占用率" : "Usage", Scale(74), HorizontalAlignment.Right);
-            projectsList.Columns.Add(chinese ? "总占比" : "Total share", Scale(80), HorizontalAlignment.Right);
+            projectsList.Columns.Add(chinese ? "总占比" : "Total share", Scale(88), HorizontalAlignment.Right);
             projectsList.Columns.Add(chinese ? "对话数" : "Chats", Scale(64), HorizontalAlignment.Right);
             projectsList.EndUpdate();
 
@@ -233,7 +233,7 @@ namespace CodexMonitor
             conversationsList.Columns.Add(chinese ? "已占用" : "Occupied", Scale(86), HorizontalAlignment.Right);
             conversationsList.Columns.Add(chinese ? "容量" : "Capacity", Scale(86), HorizontalAlignment.Right);
             conversationsList.Columns.Add(chinese ? "占用率" : "Usage", Scale(72), HorizontalAlignment.Right);
-            conversationsList.Columns.Add(chinese ? "总占比" : "Total share", Scale(74), HorizontalAlignment.Right);
+            conversationsList.Columns.Add(chinese ? "总占比" : "Total share", Scale(82), HorizontalAlignment.Right);
             conversationsList.Columns.Add(chinese ? "项目内占比" : "Project share", Scale(84), HorizontalAlignment.Right);
             conversationsList.Columns.Add(chinese ? "最后活动" : "Updated", Scale(104));
             conversationsList.EndUpdate();
@@ -242,29 +242,64 @@ namespace CodexMonitor
         private void UpdateLists()
         {
             if (projectsList == null || conversationsList == null || history == null) return;
-            long total = Math.Max(1, history.Context == null ? 0 : history.Context.InputTokens);
+            ContextCapacitySnapshot context = history.Context;
+            long total = Math.Max(0, context == null ? 0 : context.InputTokens);
             System.Collections.Generic.Dictionary<string, long> projectTotals =
                 new System.Collections.Generic.Dictionary<string, long>(StringComparer.OrdinalIgnoreCase);
+            System.Collections.Generic.List<ProjectTokenUsage> projectRows =
+                new System.Collections.Generic.List<ProjectTokenUsage>();
             foreach (ProjectTokenUsage project in history.Projects)
             {
                 if (project.ContextConversations <= 0) continue;
                 string key = String.IsNullOrWhiteSpace(project.ProjectPath) ? "(unknown)" : project.ProjectPath;
                 projectTotals[key] = project.ContextInputTokens;
+                projectRows.Add(project);
             }
+            long[] projectValues = projectRows.ConvertAll(delegate(ProjectTokenUsage project) {
+                return Math.Max(0, project.ContextInputTokens);
+            }).ToArray();
+            long projectOccupiedTotal = 0;
+            long projectCapacityTotal = 0;
+            foreach (ProjectTokenUsage project in projectRows)
+            {
+                projectOccupiedTotal += Math.Max(0, project.ContextInputTokens);
+                projectCapacityTotal += Math.Max(0, project.ContextCapacityTokens);
+            }
+            double[] projectShares = ReconciledPercentShares(projectValues, total);
+            double projectCoverage = total <= 0 ? 0 : projectOccupiedTotal * 100d / total;
+            bool projectsReconcile = projectOccupiedTotal == total
+                && (context == null || projectCapacityTotal == Math.Max(0, context.CapacityTokens));
 
             projectsList.BeginUpdate();
             projectsList.Items.Clear();
-            foreach (ProjectTokenUsage project in history.Projects)
+            ListViewItem projectSummary = new ListViewItem(chinese ? "合计（全部项目）" : "TOTAL (ALL PROJECTS)");
+            projectSummary.SubItems.Add((chinese ? "主卡 " : "Main card ") + FormatTokens(total, chinese));
+            projectSummary.SubItems.Add(FormatTokens(projectOccupiedTotal, chinese));
+            projectSummary.SubItems.Add(FormatTokens(projectCapacityTotal, chinese));
+            projectSummary.SubItems.Add(FormatPercent(projectCapacityTotal <= 0 ? -1 : projectOccupiedTotal * 100d / projectCapacityTotal, 1));
+            projectSummary.SubItems.Add(FormatPercent(projectCoverage, 2));
+            projectSummary.SubItems.Add((context == null ? 0 : context.ConversationCount).ToString(CultureInfo.CurrentCulture));
+            projectSummary.BackColor = projectsReconcile ? Color.FromArgb(225, 237, 248) : Color.FromArgb(255, 240, 218);
+            projectSummary.ForeColor = projectsReconcile ? Color.FromArgb(35, 88, 154) : Color.FromArgb(176, 92, 29);
+            projectSummary.ToolTipText = projectsReconcile
+                ? (chinese
+                    ? "项目“已占用”和“总容量”合计与主卡一致；总占比按平衡舍入精确回加到 100.00%"
+                    : "Project occupied and capacity totals match the main card; displayed shares reconcile exactly to 100.00%")
+                : (chinese
+                    ? "项目合计与主卡不一致；请刷新后检查本地会话读取状态"
+                    : "Project totals do not match the main card; refresh and check local-session read status");
+            projectsList.Items.Add(projectSummary);
+            for (int projectIndex = 0; projectIndex < projectRows.Count; projectIndex++)
             {
-                if (project.ContextConversations <= 0) continue;
-                double share = project.ContextInputTokens * 100d / total;
+                ProjectTokenUsage project = projectRows[projectIndex];
+                double share = projectShares[projectIndex];
                 ListViewItem item = new ListViewItem(String.IsNullOrWhiteSpace(project.ProjectName) ? (chinese ? "未知项目" : "Unknown project") : project.ProjectName);
                 item.SubItems.Add(String.IsNullOrWhiteSpace(project.ProjectPath) ? "—" : project.ProjectPath);
                 item.SubItems.Add(FormatTokens(project.ContextInputTokens, chinese));
                 item.SubItems.Add(FormatTokens(project.ContextCapacityTokens, chinese));
                 double usage = project.ContextCapacityTokens <= 0 ? 0 : project.ContextInputTokens * 100d / project.ContextCapacityTokens;
                 item.SubItems.Add(usage.ToString("0.0", CultureInfo.CurrentCulture) + "%");
-                item.SubItems.Add(share.ToString("0.0", CultureInfo.CurrentCulture) + "%");
+                item.SubItems.Add(share.ToString("0.00", CultureInfo.CurrentCulture) + "%");
                 item.SubItems.Add(project.ContextConversations.ToString(CultureInfo.CurrentCulture));
                 item.ToolTipText = String.IsNullOrWhiteSpace(project.ProjectPath) ? project.ProjectName : project.ProjectPath;
                 if (share >= 25) item.ForeColor = Color.FromArgb(182, 82, 58);
@@ -275,13 +310,51 @@ namespace CodexMonitor
 
             conversationsList.BeginUpdate();
             conversationsList.Items.Clear();
-            foreach (ConversationTokenUsage conversation in history.Conversations)
+            System.Collections.Generic.List<ConversationTokenUsage> conversationRows =
+                history.Conversations.FindAll(delegate(ConversationTokenUsage conversation) {
+                    return conversation.ContextAvailable;
+                });
+            long[] conversationValues = conversationRows.ConvertAll(delegate(ConversationTokenUsage conversation) {
+                return Math.Max(0, conversation.ContextInputTokens);
+            }).ToArray();
+            long conversationOccupiedTotal = 0;
+            long conversationCapacityTotal = 0;
+            foreach (ConversationTokenUsage conversation in conversationRows)
             {
-                if (!conversation.ContextAvailable) continue;
+                conversationOccupiedTotal += Math.Max(0, conversation.ContextInputTokens);
+                conversationCapacityTotal += Math.Max(0, conversation.ContextCapacityTokens);
+            }
+            double[] conversationShares = ReconciledPercentShares(conversationValues, total);
+            double conversationCoverage = total <= 0 ? 0 : conversationOccupiedTotal * 100d / total;
+            bool conversationsReconcile = conversationOccupiedTotal == total
+                && (context == null || conversationCapacityTotal == Math.Max(0, context.CapacityTokens));
+            ListViewItem conversationSummary = new ListViewItem(chinese ? "合计（全部对话）" : "TOTAL (ALL CONVERSATIONS)");
+            conversationSummary.SubItems.Add(chinese ? "全部项目" : "All projects");
+            conversationSummary.SubItems.Add(FormatTokens(conversationOccupiedTotal, chinese));
+            conversationSummary.SubItems.Add(FormatTokens(conversationCapacityTotal, chinese));
+            conversationSummary.SubItems.Add(FormatPercent(conversationCapacityTotal <= 0 ? -1 : conversationOccupiedTotal * 100d / conversationCapacityTotal, 1));
+            conversationSummary.SubItems.Add(FormatPercent(conversationCoverage, 2));
+            conversationSummary.SubItems.Add("—");
+            conversationSummary.SubItems.Add(context == null || context.SampleUtc == DateTime.MinValue
+                ? "—"
+                : context.SampleUtc.ToLocalTime().ToString(chinese ? "M-d HH:mm" : "MMM d HH:mm", CultureInfo.CurrentCulture));
+            conversationSummary.BackColor = conversationsReconcile ? Color.FromArgb(225, 237, 248) : Color.FromArgb(255, 240, 218);
+            conversationSummary.ForeColor = conversationsReconcile ? Color.FromArgb(35, 88, 154) : Color.FromArgb(176, 92, 29);
+            conversationSummary.ToolTipText = conversationsReconcile
+                ? (chinese
+                    ? "对话“已占用”和“容量”合计与主卡一致；总占比按平衡舍入精确回加到 100.00%"
+                    : "Conversation occupied and capacity totals match the main card; displayed shares reconcile exactly to 100.00%")
+                : (chinese
+                    ? "对话合计与主卡不一致；请刷新后检查本地会话读取状态"
+                    : "Conversation totals do not match the main card; refresh and check local-session read status");
+            conversationsList.Items.Add(conversationSummary);
+            for (int conversationIndex = 0; conversationIndex < conversationRows.Count; conversationIndex++)
+            {
+                ConversationTokenUsage conversation = conversationRows[conversationIndex];
                 string key = String.IsNullOrWhiteSpace(conversation.ProjectPath) ? "(unknown)" : conversation.ProjectPath;
                 long projectTotal;
                 if (!projectTotals.TryGetValue(key, out projectTotal)) projectTotal = conversation.ContextInputTokens;
-                double totalShare = conversation.ContextInputTokens * 100d / total;
+                double totalShare = conversationShares[conversationIndex];
                 double projectShare = projectTotal <= 0 ? 0 : conversation.ContextInputTokens * 100d / projectTotal;
                 string id = String.IsNullOrWhiteSpace(conversation.SessionId)
                     ? "unknown"
@@ -293,7 +366,7 @@ namespace CodexMonitor
                 item.SubItems.Add(FormatTokens(conversation.ContextCapacityTokens, chinese));
                 double usage = conversation.ContextCapacityTokens <= 0 ? 0 : conversation.ContextInputTokens * 100d / conversation.ContextCapacityTokens;
                 item.SubItems.Add(usage.ToString("0.0", CultureInfo.CurrentCulture) + "%");
-                item.SubItems.Add(totalShare.ToString("0.0", CultureInfo.CurrentCulture) + "%");
+                item.SubItems.Add(totalShare.ToString("0.00", CultureInfo.CurrentCulture) + "%");
                 item.SubItems.Add(projectShare.ToString("0.0", CultureInfo.CurrentCulture) + "%");
                 item.SubItems.Add(conversation.UpdatedLocal.ToString(chinese ? "M-d HH:mm" : "MMM d HH:mm", CultureInfo.CurrentCulture));
                 if (totalShare >= 10) item.ForeColor = Color.FromArgb(182, 82, 58);
@@ -301,6 +374,51 @@ namespace CodexMonitor
                 conversationsList.Items.Add(item);
             }
             conversationsList.EndUpdate();
+        }
+
+        internal static double[] ReconciledPercentShares(System.Collections.Generic.IList<long> values, long denominator)
+        {
+            int count = values == null ? 0 : values.Count;
+            double[] result = new double[count];
+            if (count == 0) return result;
+            decimal valueTotal = 0;
+            for (int index = 0; index < count; index++)
+                valueTotal += Math.Max(0, values[index]);
+            decimal shareDenominator = Math.Max(0, denominator);
+            if (valueTotal <= 0 || shareDenominator <= 0) return result;
+
+            int targetUnits = (int)Math.Round(
+                valueTotal * 10000m / shareDenominator,
+                0,
+                MidpointRounding.AwayFromZero);
+            int[] units = new int[count];
+            decimal[] remainders = new decimal[count];
+            System.Collections.Generic.List<int> order = new System.Collections.Generic.List<int>();
+            int assigned = 0;
+            for (int index = 0; index < count; index++)
+            {
+                decimal exactUnits = Math.Max(0, values[index]) * 10000m / shareDenominator;
+                units[index] = (int)Math.Floor(exactUnits);
+                remainders[index] = exactUnits - units[index];
+                assigned += units[index];
+                order.Add(index);
+            }
+            order.Sort(delegate(int left, int right) {
+                int remainder = remainders[right].CompareTo(remainders[left]);
+                return remainder != 0 ? remainder : left.CompareTo(right);
+            });
+            int missing = Math.Max(0, targetUnits - assigned);
+            for (int index = 0; index < missing; index++)
+                units[order[index % order.Count]]++;
+            for (int index = 0; index < count; index++)
+                result[index] = units[index] / 100d;
+            return result;
+        }
+
+        private static string FormatPercent(double value, int decimals)
+        {
+            if (Double.IsNaN(value) || Double.IsInfinity(value) || value < 0) return "—";
+            return value.ToString(decimals <= 1 ? "0.0" : "0.00", CultureInfo.CurrentCulture) + "%";
         }
 
         private void LayoutControls()
@@ -354,9 +472,9 @@ namespace CodexMonitor
                 g.DrawString(chinese ? "上下文总占用明细" : "Aggregate context occupancy details", titleFont, ink, 126, 22);
                 string subtitle;
                 if (activeView == ContextBreakdownView.Projects)
-                    subtitle = chinese ? "按项目汇总每个对话最新上下文占用，并显示容量与总占比" : "Latest context occupancy grouped by project, with capacity and total share";
+                    subtitle = chinese ? "按项目汇总最新上下文占用；合计行与主卡一致，总占比精确回加至 100.00%" : "Grouped latest context occupancy; totals match the main card and displayed shares reconcile to 100.00%";
                 else if (activeView == ContextBreakdownView.Conversations)
-                    subtitle = chinese ? "逐个列出对话最新上下文占用、窗口容量与占用率" : "Latest context occupancy, window capacity, and usage for every conversation";
+                    subtitle = chinese ? "逐个列出最新上下文占用；合计行与主卡一致，总占比精确回加至 100.00%" : "Latest occupancy per conversation; totals match the main card and displayed shares reconcile to 100.00%";
                 else
                     subtitle = chinese ? "汇总所有对话最后一次上下文快照；历史 Token 吞吐不会计入"
                         : "Aggregates the final context snapshot of every conversation; Token throughput is excluded";

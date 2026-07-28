@@ -205,12 +205,12 @@ private final class ContextBreakdownView: NSView {
         let subtitle: String
         if selected == .projects {
             subtitle = language == .chinese
-                ? "按项目汇总每个对话最新上下文占用，并显示容量与总占比"
-                : "Latest context occupancy grouped by project, with capacity and total share"
+                ? "按项目汇总最新上下文占用；合计行与主卡一致，总占比精确回加至 100.00%"
+                : "Grouped latest context occupancy; totals match the main card and displayed shares reconcile to 100.00%"
         } else if selected == .conversations {
             subtitle = language == .chinese
-                ? "逐个列出对话最新上下文占用、窗口容量与占用率"
-                : "Latest context occupancy, window capacity, and usage for every conversation"
+                ? "逐个列出最新上下文占用；合计行与主卡一致，总占比精确回加至 100.00%"
+                : "Latest occupancy per conversation; totals match the main card and displayed shares reconcile to 100.00%"
         } else {
             subtitle = language == .chinese
                 ? "汇总所有对话最后一次上下文快照；历史 Token 吞吐不会计入"
@@ -398,8 +398,12 @@ private final class ContextBreakdownView: NSView {
 
     private func drawProjects(in panel: NSRect) {
         let content = panel.insetBy(dx: 22, dy: 22)
-        let total = max(Int64(1), snapshot.context.inputTokens)
+        let total = max(Int64(0), snapshot.context.inputTokens)
         let rows = snapshot.projects.filter { $0.contextConversations > 0 }
+        let occupiedTotal = rows.reduce(Int64(0)) { $0 + max(0, $1.contextInputTokens) }
+        let capacityTotal = rows.reduce(Int64(0)) { $0 + max(0, $1.contextCapacityTokens) }
+        let totalsReconcile = occupiedTotal == snapshot.context.inputTokens
+            && capacityTotal == snapshot.context.capacityTokens
         let columns: [(String, CGFloat, NSTextAlignment)] = [
             (language == .chinese ? "项目" : "PROJECT", 0.14, .left),
             (language == .chinese ? "项目路径" : "PROJECT PATH", 0.28, .left),
@@ -412,15 +416,47 @@ private final class ContextBreakdownView: NSView {
         drawTableHeader(columns, in: NSRect(x: content.minX, y: content.minY, width: content.width - 10, height: 28))
         let rowHeight: CGFloat = 46
         let rowsTop = content.minY + 38
-        let visible = max(1, Int((content.maxY - rowsTop) / rowHeight))
+        let aggregateUsage = capacityTotal > 0
+            ? Double(occupiedTotal) * 100 / Double(capacityTotal)
+            : 0
+        let coverage = snapshot.context.inputTokens > 0
+            ? Double(occupiedTotal) * 100 / Double(snapshot.context.inputTokens)
+            : 0
+        let summaryRow = NSRect(
+            x: content.minX,
+            y: rowsTop,
+            width: content.width - 10,
+            height: rowHeight - 4
+        )
+        let summaryColor = totalsReconcile ? Palette.accent : Palette.caution
+        summaryColor.withAlpha(0.10).setFill()
+        roundedPath(summaryRow, radius: 8).fill()
+        drawTableRow(
+            [
+                language == .chinese ? "合计（全部项目）" : "TOTAL (ALL PROJECTS)",
+                (language == .chinese ? "主卡 " : "Main card ")
+                    + formatTokens(snapshot.context.inputTokens, language: language),
+                formatTokens(occupiedTotal, language: language),
+                formatTokens(capacityTotal, language: language),
+                String(format: "%.1f%%", aggregateUsage),
+                String(format: "%.2f%%", coverage),
+                "\(snapshot.context.conversationCount)"
+            ],
+            columns: columns,
+            in: summaryRow,
+            color: summaryColor
+        )
+        let dataRowsTop = rowsTop + rowHeight
+        let visible = max(1, Int((content.maxY - dataRowsTop) / rowHeight))
         let maximum = max(0, rows.count - visible)
         scrollOffset = min(maximum, scrollOffset)
         let end = min(rows.count, scrollOffset + visible)
+        let shares = reconciledPercentShares(rows.map(\.contextInputTokens), denominator: total)
         for index in scrollOffset ..< end {
             let project = rows[index]
             let row = NSRect(
                 x: content.minX,
-                y: rowsTop + CGFloat(index - scrollOffset) * rowHeight,
+                y: dataRowsTop + CGFloat(index - scrollOffset) * rowHeight,
                 width: content.width - 10,
                 height: rowHeight - 4
             )
@@ -428,7 +464,7 @@ private final class ContextBreakdownView: NSView {
                 Palette.stroke.withAlpha(0.12).setFill()
                 roundedPath(row, radius: 8).fill()
             }
-            let share = Double(project.contextInputTokens) * 100 / Double(total)
+            let share = shares[index]
             let usage = project.contextCapacityTokens > 0
                 ? Double(project.contextInputTokens) * 100 / Double(project.contextCapacityTokens)
                 : 0
@@ -439,7 +475,7 @@ private final class ContextBreakdownView: NSView {
                 formatTokens(project.contextInputTokens, language: language),
                 formatTokens(project.contextCapacityTokens, language: language),
                 String(format: "%.1f%%", usage),
-                String(format: "%.1f%%", share),
+                String(format: "%.2f%%", share),
                 "\(project.contextConversations)"
             ]
             drawTableRow(values, columns: columns, in: row, color: color)
@@ -451,8 +487,12 @@ private final class ContextBreakdownView: NSView {
 
     private func drawConversations(in panel: NSRect) {
         let content = panel.insetBy(dx: 22, dy: 22)
-        let total = max(Int64(1), snapshot.context.inputTokens)
+        let total = max(Int64(0), snapshot.context.inputTokens)
         let rows = snapshot.conversations.filter(\.contextAvailable)
+        let occupiedTotal = rows.reduce(Int64(0)) { $0 + max(0, $1.contextInputTokens) }
+        let capacityTotal = rows.reduce(Int64(0)) { $0 + max(0, $1.contextCapacityTokens) }
+        let totalsReconcile = occupiedTotal == snapshot.context.inputTokens
+            && capacityTotal == snapshot.context.capacityTokens
         let projectTotals = Dictionary(uniqueKeysWithValues: snapshot.projects.filter { $0.contextConversations > 0 }.map {
             (($0.projectPath ?? "(unknown)"), $0.contextInputTokens)
         })
@@ -469,15 +509,49 @@ private final class ContextBreakdownView: NSView {
         drawTableHeader(columns, in: NSRect(x: content.minX, y: content.minY, width: content.width - 10, height: 28))
         let rowHeight: CGFloat = 46
         let rowsTop = content.minY + 38
-        let visible = max(1, Int((content.maxY - rowsTop) / rowHeight))
+        let aggregateUsage = capacityTotal > 0
+            ? Double(occupiedTotal) * 100 / Double(capacityTotal)
+            : 0
+        let coverage = snapshot.context.inputTokens > 0
+            ? Double(occupiedTotal) * 100 / Double(snapshot.context.inputTokens)
+            : 0
+        let summaryRow = NSRect(
+            x: content.minX,
+            y: rowsTop,
+            width: content.width - 10,
+            height: rowHeight - 4
+        )
+        let summaryColor = totalsReconcile ? Palette.accent : Palette.caution
+        summaryColor.withAlpha(0.10).setFill()
+        roundedPath(summaryRow, radius: 8).fill()
+        drawTableRow(
+            [
+                language == .chinese ? "合计（全部对话）" : "TOTAL (ALL CONVERSATIONS)",
+                language == .chinese ? "全部项目" : "All projects",
+                formatTokens(occupiedTotal, language: language),
+                formatTokens(capacityTotal, language: language),
+                String(format: "%.1f%%", aggregateUsage),
+                String(format: "%.2f%%", coverage),
+                "—",
+                snapshot.context.sampledAt.map {
+                    DateFormatter.localizedString(from: $0, dateStyle: .short, timeStyle: .short)
+                } ?? "—"
+            ],
+            columns: columns,
+            in: summaryRow,
+            color: summaryColor
+        )
+        let dataRowsTop = rowsTop + rowHeight
+        let visible = max(1, Int((content.maxY - dataRowsTop) / rowHeight))
         let maximum = max(0, rows.count - visible)
         scrollOffset = min(maximum, scrollOffset)
         let end = min(rows.count, scrollOffset + visible)
+        let totalShares = reconciledPercentShares(rows.map(\.contextInputTokens), denominator: total)
         for index in scrollOffset ..< end {
             let conversation = rows[index]
             let row = NSRect(
                 x: content.minX,
-                y: rowsTop + CGFloat(index - scrollOffset) * rowHeight,
+                y: dataRowsTop + CGFloat(index - scrollOffset) * rowHeight,
                 width: content.width - 10,
                 height: rowHeight - 4
             )
@@ -485,7 +559,7 @@ private final class ContextBreakdownView: NSView {
                 Palette.stroke.withAlpha(0.12).setFill()
                 roundedPath(row, radius: 8).fill()
             }
-            let totalShare = Double(conversation.contextInputTokens) * 100 / Double(total)
+            let totalShare = totalShares[index]
             let projectTotal = max(
                 Int64(1),
                 projectTotals[conversation.projectPath ?? "(unknown)"] ?? conversation.contextInputTokens
@@ -504,7 +578,7 @@ private final class ContextBreakdownView: NSView {
                 formatTokens(conversation.contextInputTokens, language: language),
                 formatTokens(conversation.contextCapacityTokens, language: language),
                 String(format: "%.1f%%", usage),
-                String(format: "%.1f%%", totalShare),
+                String(format: "%.2f%%", totalShare),
                 String(format: "%.1f%%", projectShare),
                 updated
             ]
@@ -513,6 +587,39 @@ private final class ContextBreakdownView: NSView {
             NSBezierPath(rect: NSRect(x: row.minX, y: row.maxY - 2, width: row.width * CGFloat(min(100, totalShare)) / 100, height: 2)).fill()
         }
         drawScrollIndicator(count: rows.count, visible: visible, offset: scrollOffset, in: content)
+    }
+
+    private func reconciledPercentShares(_ values: [Int64], denominator: Int64) -> [Double] {
+        guard !values.isEmpty else { return [] }
+        let valueTotal = values.reduce(0.0) { partial, value in
+            partial + Double(max(0, value))
+        }
+        let shareDenominator = Double(max(0, denominator))
+        guard valueTotal > 0, shareDenominator > 0 else {
+            return Array(repeating: 0, count: values.count)
+        }
+
+        let targetUnits = Int((valueTotal * 10_000 / shareDenominator).rounded())
+        var units = Array(repeating: 0, count: values.count)
+        var remainders = Array(repeating: 0.0, count: values.count)
+        var assigned = 0
+        for index in values.indices {
+            let exact = Double(max(0, values[index])) * 10_000 / shareDenominator
+            units[index] = Int(floor(exact))
+            remainders[index] = exact - Double(units[index])
+            assigned += units[index]
+        }
+        let order = values.indices.sorted {
+            if remainders[$0] == remainders[$1] { return $0 < $1 }
+            return remainders[$0] > remainders[$1]
+        }
+        let missing = max(0, targetUnits - assigned)
+        if !order.isEmpty {
+            for offset in 0 ..< missing {
+                units[order[offset % order.count]] += 1
+            }
+        }
+        return units.map { Double($0) / 100 }
     }
 
     private func drawTableHeader(
