@@ -311,20 +311,12 @@ private final class TokenDetailsView: NSView {
         card.lineWidth = 0.8
         card.stroke()
 
-        let available = snapshot.available && snapshot.totalTokens > 0 && snapshot.monthTokens >= 0
-        let monthShare = available ? share(snapshot.monthTokens, of: snapshot.totalTokens) : nil
-        let activeConversation = findActiveConversation()
-        let activeProject = findActiveProject(for: activeConversation)
-        let projectShare = activeProject.flatMap { share($0.tokens, of: snapshot.totalTokens) }
-        let conversationShare = activeConversation.flatMap { share($0.tokens, of: snapshot.totalTokens) }
-        let conversationProjectShare = {
-            guard let conversation = activeConversation, let project = activeProject else { return nil }
-            return share(conversation.tokens, of: project.tokens)
-        }()
-        let state = Palette.accent
+        let context = snapshot.context
+        let usedPercent = context.usedPercent
+        let state = contextStateColor(usedPercent)
         let heroWidth = max(260, rect.width * 0.34)
         drawText(
-            language == .chinese ? "本月总用量" : "MONTHLY TOTAL USAGE",
+            language == .chinese ? "当前会话上下文" : "CURRENT SESSION CONTEXT",
             in: NSRect(x: rect.minX + 24, y: rect.minY + 17, width: heroWidth - 40, height: 24),
             font: Typography.system(16, weight: .semibold),
             color: Palette.text
@@ -337,49 +329,45 @@ private final class TokenDetailsView: NSView {
             alignment: .right
         )
         drawText(
-            available ? formatTokens(snapshot.monthTokens, language: language) : "—",
-            in: NSRect(x: rect.minX + 22, y: rect.minY + 49, width: heroWidth - 44, height: 42),
+            usedPercent.map { String(format: "%.0f%%", $0) } ?? "—",
+            in: NSRect(x: rect.minX + 22, y: rect.minY + 49, width: 92, height: 42),
             font: Typography.mono(32, weight: .semibold),
             color: state
         )
-        let ratio = monthShare.map {
-            language == .chinese
-                ? "占累计总量 \(formatPercent($0))"
-                : "SHARE OF CUMULATIVE TOTAL \(formatPercent($0))"
-        } ?? (language == .chinese ? "正在读取本机 Token 历史" : "READING LOCAL TOKEN HISTORY")
+        let ratio = context.available
+            ? formatTokens(context.inputTokens, language: language) + " / " + formatTokens(context.capacityTokens, language: language)
+            : (language == .chinese ? "等待当前会话数据" : "WAITING FOR CURRENT SESSION")
         drawText(
             ratio,
-            in: NSRect(x: rect.minX + 24, y: rect.minY + 91, width: heroWidth - 48, height: 18),
+            in: NSRect(x: rect.minX + 104, y: rect.minY + 65, width: heroWidth - 126, height: 18),
             font: Typography.mono(10.5, weight: .medium),
             color: Palette.secondary
         )
         drawText(
-            language == .chinese ? "本月占累计" : "MONTH / CUMULATIVE",
-            in: NSRect(x: rect.minX + 24, y: rect.minY + 110, width: 80, height: 16),
+            language == .chinese ? "上下文占用" : "CONTEXT USED",
+            in: NSRect(x: rect.minX + 24, y: rect.minY + 104, width: 76, height: 16),
             font: Typography.system(9.5, weight: .medium),
             color: Palette.secondary
         )
 
-        let track = NSRect(x: rect.minX + 104, y: rect.minY + 113, width: max(110, heroWidth - 128), height: 7)
+        let track = NSRect(x: rect.minX + 104, y: rect.minY + 108, width: max(110, heroWidth - 128), height: 7)
         Palette.stroke.withAlpha(0.52).setFill()
         roundedPath(track, radius: 3.5).fill()
-        if let monthShare {
+        if let usedPercent {
             let fill = NSRect(
                 x: track.minX,
                 y: track.minY,
-                width: max(4, min(track.width, track.width * monthShare / 100)),
+                width: max(4, min(track.width, track.width * usedPercent / 100)),
                 height: track.height
             )
             state.setFill()
             roundedPath(fill, radius: 3.5).fill()
         }
         drawText(
-            language == .chinese
-                ? "按当前自然月统计"
-                : "CURRENT CALENDAR MONTH",
-            in: NSRect(x: rect.minX + 24, y: rect.minY + 132, width: heroWidth - 42, height: 17),
+            contextGuidance(usedPercent),
+            in: NSRect(x: rect.minX + 24, y: rect.minY + 127, width: heroWidth - 42, height: 17),
             font: Typography.system(9.5, weight: .medium),
-            color: Palette.secondary
+            color: state
         )
 
         let detailsX = rect.minX + heroWidth + 18
@@ -397,37 +385,42 @@ private final class TokenDetailsView: NSView {
             x: detailsX,
             y: cellY,
             width: cellWidth,
-            label: language == .chinese ? "当前项目总占比" : "CURRENT PROJECT / TOTAL",
-            value: projectShare.map { formatPercent($0) } ?? "—"
+            label: language == .chinese ? "上下文输入" : "CONTEXT INPUT",
+            value: context.available ? formatTokens(context.inputTokens, language: language) : "—"
         )
         drawContextValue(
             x: detailsX + cellWidth,
             y: cellY,
             width: cellWidth,
-            label: language == .chinese ? "当前对话总占比" : "CURRENT CONVERSATION / TOTAL",
-            value: conversationShare.map { formatPercent($0) } ?? "—"
+            label: language == .chinese ? "剩余容量" : "REMAINING",
+            value: context.available ? formatTokens(context.remainingTokens, language: language) : "—"
         )
         drawContextValue(
             x: detailsX + cellWidth * 2,
             y: cellY,
             width: cellWidth,
-            label: language == .chinese ? "项目内占比" : "CONVERSATION / PROJECT",
-            value: conversationProjectShare.map { formatPercent($0) } ?? "—"
+            label: language == .chinese ? "缓存复用" : "CACHED INPUT",
+            value: context.available && context.inputBreakdownAvailable
+                ? formatTokens(context.cachedInputTokens, language: language)
+                : "—"
         )
         drawContextValue(
             x: detailsX + cellWidth * 3,
             y: cellY,
             width: max(80, detailsWidth - cellWidth * 3),
-            label: language == .chinese ? "本机累计" : "LOCAL CUMULATIVE",
-            value: snapshot.available ? formatTokens(snapshot.totalTokens, language: language) : "—"
+            label: language == .chinese ? "新增输入" : "FRESH INPUT",
+            value: context.available && context.inputBreakdownAvailable
+                ? formatTokens(context.freshInputTokens, language: language)
+                : "—"
         )
 
+        let footer = context.available
+            ? (language == .chinese ? "当前活动会话" : "CURRENT ACTIVE SESSION") + contextSampleSuffix(context)
+            : (language == .chinese
+                ? "仅显示当前活动会话的最新数值记录"
+                : "USES THE NEWEST NUMERIC RECORD FROM THE CURRENT ACTIVE SESSION")
         drawText(
-            available
-                ? (language == .chinese
-                    ? "本月 \(formatTokens(snapshot.monthTokens, language: language)) / 本机累计 \(formatTokens(snapshot.totalTokens, language: language)) · 本机数字记录统计"
-                    : "MONTH \(formatTokens(snapshot.monthTokens, language: language)) / LOCAL CUMULATIVE \(formatTokens(snapshot.totalTokens, language: language)) · LOCAL NUMERIC HISTORY")
-                : (language == .chinese ? "本机 Token 历史暂不可用，将自动重试" : "LOCAL TOKEN HISTORY UNAVAILABLE · RETRYING AUTOMATICALLY"),
+            footer,
             in: NSRect(x: detailsX, y: rect.maxY - 31, width: detailsWidth, height: 18),
             font: Typography.system(9.5),
             color: Palette.secondary
@@ -449,33 +442,30 @@ private final class TokenDetailsView: NSView {
         )
     }
 
-    private func formatPercent(_ value: Double) -> String {
-        String(format: "%.0f%%", min(100, max(0, value)))
+    private func contextStateColor(_ usedPercent: Double?) -> NSColor {
+        guard let usedPercent else { return Palette.secondary.withAlphaComponent(0.62) }
+        if usedPercent <= 50 { return Palette.healthy }
+        if usedPercent <= 90 { return Palette.caution }
+        return Palette.critical
     }
 
-    private func share(_ part: Int64, of total: Int64) -> Double? {
-        guard total > 0, part >= 0 else { return nil }
-        return min(100, max(0, Double(part) * 100 / Double(total)))
+    private func contextSampleSuffix(_ context: ContextCapacitySnapshot) -> String {
+        guard let sampledAt = context.sampledAt else { return "" }
+        let time = DateFormatter.localizedString(from: sampledAt, dateStyle: .none, timeStyle: .medium)
+        return language == .chinese ? " · 上下文采样 \(time)" : " · CONTEXT SAMPLED \(time)"
     }
 
-    private func findActiveConversation() -> ConversationTokenUsage? {
-        guard let sessionID = snapshot.context.sessionID else { return nil }
-        return snapshot.conversations.first {
-            $0.sessionID.compare(sessionID, options: .caseInsensitive) == .orderedSame
+    private func contextGuidance(_ usedPercent: Double?) -> String {
+        guard let usedPercent else {
+            return language == .chinese ? "状态不可用" : "STATUS UNAVAILABLE"
         }
-    }
-
-    private func findActiveProject(for conversation: ConversationTokenUsage?) -> ProjectTokenUsage? {
-        guard let conversation else { return nil }
-        if let path = conversation.projectPath {
-            return snapshot.projects.first {
-                guard let projectPath = $0.projectPath else { return false }
-                return projectPath.compare(path, options: .caseInsensitive) == .orderedSame
-            }
+        if usedPercent <= 50 {
+            return language == .chinese ? "健康 · 暂无需整理" : "HEALTHY · NO CLEANUP NEEDED"
         }
-        return snapshot.projects.first {
-            $0.projectName.compare(conversation.projectName, options: .caseInsensitive) == .orderedSame
+        if usedPercent <= 90 {
+            return language == .chinese ? "谨慎 · 建议整理无关上下文" : "CAUTION · TRIM UNRELATED CONTEXT"
         }
+        return language == .chinese ? "紧急 · 建议总结后新建任务" : "CRITICAL · SUMMARIZE AND START A NEW TASK"
     }
 
     private func drawActivity() {
