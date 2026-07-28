@@ -29,7 +29,7 @@ final class MonitorController: OrbPanelActions {
     init() {
         preferences = store.load()
         orb = OrbPanelController(snapshot: quota, preferences: preferences)
-        details = TokenDetailsWindowController(snapshot: history, language: preferences.language)
+        details = TokenDetailsWindowController(snapshot: history, quota: quota, language: preferences.language)
         orb.actions = self
         details.onRefresh = { [weak self] in
             self?.requestHistoryRefresh()
@@ -189,9 +189,12 @@ final class MonitorController: OrbPanelActions {
             lastValidQuota = latest
         } else if let valid = lastValidQuota,
                   Date().timeIntervalSince(valid.sampledAt) <= 30 * 60 {
+            display.available = true
             display.plan = valid.plan
             display.weeklyRemaining = valid.weeklyRemaining
             display.weeklyReset = valid.weeklyReset
+            display.sampledAt = valid.sampledAt
+            display.status = "stale"
         }
         quota = display
         quotaRequestInFlight = false
@@ -200,6 +203,7 @@ final class MonitorController: OrbPanelActions {
         } ?? false
         nextQuotaRefresh = Date().addingTimeInterval(closeToReset ? 10 : 30)
         orb.update(snapshot: display, preferences: preferences)
+        details.update(snapshot: history, quota: display, language: preferences.language)
     }
 
     private func refreshHistory() {
@@ -215,7 +219,7 @@ final class MonitorController: OrbPanelActions {
     private func applyHistory(_ latest: TokenHistorySnapshot) {
         history = latest
         historyRequestInFlight = false
-        details.update(snapshot: latest, language: preferences.language)
+        details.update(snapshot: latest, quota: quota, language: preferences.language)
     }
 
     func orbPanelDidRequestToggle(_ controller: OrbPanelController) {
@@ -228,7 +232,7 @@ final class MonitorController: OrbPanelActions {
     func orbPanelDidRequestDetails(_ controller: OrbPanelController) {
         controller.setExpanded(false)
         outsideSince = nil
-        details.update(snapshot: history, language: preferences.language)
+        details.update(snapshot: history, quota: quota, language: preferences.language)
         details.present()
         refreshHistory()
     }
@@ -237,7 +241,7 @@ final class MonitorController: OrbPanelActions {
         preferences.language = preferences.language == .chinese ? .english : .chinese
         store.save(preferences)
         orb.update(snapshot: quota, preferences: preferences)
-        details.update(snapshot: history, language: preferences.language)
+        details.update(snapshot: history, quota: quota, language: preferences.language)
     }
 
     func orbPanelDidRequestPin(_ controller: OrbPanelController) {

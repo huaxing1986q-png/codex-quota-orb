@@ -41,7 +41,7 @@ namespace CodexMonitor
             history = initial ?? new TokenHistorySnapshot();
             chinese = chineseValue;
             uiScale = Math.Max(1f, initialScale);
-            Text = chinese ? "上下文容量分布" : "Context capacity breakdown";
+            Text = chinese ? "容量与占用明细" : "Capacity and usage details";
             FormBorderStyle = FormBorderStyle.Sizable;
             StartPosition = FormStartPosition.Manual;
             ShowInTaskbar = false;
@@ -174,7 +174,7 @@ namespace CodexMonitor
 
         private void UpdateLanguage()
         {
-            Text = chinese ? "上下文容量分布" : "Context capacity breakdown";
+            Text = chinese ? "容量与占用明细" : "Capacity and usage details";
             backButton.Text = chinese ? "返回" : "Back";
             backButton.AccessibleName = chinese ? "返回 Token 使用详情" : "Return to token usage details";
             Font previous = backButton.Font;

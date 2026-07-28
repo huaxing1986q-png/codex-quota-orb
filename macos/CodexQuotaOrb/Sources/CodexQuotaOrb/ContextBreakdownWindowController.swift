@@ -40,7 +40,7 @@ final class ContextBreakdownWindowController: NSWindowController, NSWindowDelega
     func update(snapshot: TokenHistorySnapshot, language: AppLanguage) {
         breakdownView.snapshot = snapshot
         breakdownView.language = language
-        window?.title = language == .chinese ? "上下文容量分布" : "Context capacity breakdown"
+        window?.title = language == .chinese ? "容量与占用明细" : "Capacity and usage details"
         breakdownView.needsDisplay = true
     }
 
