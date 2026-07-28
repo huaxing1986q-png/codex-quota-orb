@@ -395,14 +395,14 @@ private final class TokenDetailsView: NSView {
             y: rect.minY + 38,
             width: cellWidth,
             label: language == .chinese ? "已用配额" : "QUOTA USED",
-            value: usedPercent.map(formatPercent) ?? "—"
+            value: usedPercent.map { formatPercent($0) } ?? "—"
         )
         drawContextValue(
             x: detailsX + cellWidth,
             y: rect.minY + 38,
             width: cellWidth,
             label: language == .chinese ? "剩余配额" : "QUOTA REMAINING",
-            value: remainingPercent.map(formatPercent) ?? "—"
+            value: remainingPercent.map { formatPercent($0) } ?? "—"
         )
         drawContextValue(
             x: detailsX + cellWidth * 2,
