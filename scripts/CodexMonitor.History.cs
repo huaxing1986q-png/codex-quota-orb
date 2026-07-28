@@ -266,11 +266,16 @@ namespace CodexMonitor
                 Assert(failures, parsed.Context.RemainingTokens == 110 && Math.Abs(parsed.Context.UsedPercent - 45) < 0.001, "context remaining and percent");
                 Assert(failures, parsed.Context.OutputTokens == 10 && parsed.Context.ReasoningOutputTokens == 4, "context output structure");
                 Assert(failures, parsed.Context.SessionTotalTokens == 300, "context session cumulative");
+                string compactedLine = "{\"timestamp\":\"2026-07-21T04:00:00Z\",\"type\":\"event_msg\",\"payload\":{\"type\":\"token_count\",\"info\":{\"total_token_usage\":{\"total_tokens\":191751509},\"last_token_usage\":{\"input_tokens\":0,\"cached_input_tokens\":0,\"output_tokens\":0,\"reasoning_output_tokens\":0,\"total_tokens\":45442},\"model_context_window\":258400}}}";
+                ContextCapacitySnapshot compacted;
+                Assert(failures, TryParseContextLine(compactedLine, out compacted), "compacted context fixture parses");
+                Assert(failures, compacted != null && compacted.InputTokens == 45442, "compacted context derives occupied input from last total");
+                Assert(failures, compacted != null && Math.Abs(compacted.UsedPercent - (45442d * 100d / 258400d)) < 0.001, "compacted context avoids false zero percent");
                 Assert(failures, parsed.Projects.Count == 1 && parsed.Projects[0].Tokens == 300 && parsed.Projects[0].Conversations == 1, "project aggregation");
                 Assert(failures, parsed.Conversations.Count == 1 && parsed.Conversations[0].SessionId.StartsWith("01234567"), "conversation aggregation");
                 TokenHistorySnapshot reused = ReadLatest(root, cache, null);
                 Assert(failures, reused.ReusedFiles == 1, "history cache reuse");
-                return 13;
+                return 16;
             }
             finally
             {
@@ -384,6 +389,13 @@ namespace CodexMonitor
                 Dictionary<string, object> last = Value(info, "last_token_usage") as Dictionary<string, object>;
                 long capacity = LongValue(info, "model_context_window");
                 long input = LongValue(last, "input_tokens");
+                long lastTotal = Math.Max(0, LongValue(last, "total_tokens"));
+                long output = Math.Max(0, LongValue(last, "output_tokens"));
+                // A compaction-boundary token_count can zero its input components
+                // while last total still carries the compacted context size.
+                // total_tokens is input + output; reasoning is an output subset.
+                // Never use cumulative total_token_usage as context occupancy.
+                if (input == 0 && lastTotal > output) input = lastTotal - output;
                 if (capacity <= 0 || input < 0) return false;
 
                 DateTime sampleUtc;
@@ -399,7 +411,7 @@ namespace CodexMonitor
                     CapacityTokens = capacity,
                     InputTokens = input,
                     CachedInputTokens = cached,
-                    OutputTokens = Math.Max(0, LongValue(last, "output_tokens")),
+                    OutputTokens = output,
                     ReasoningOutputTokens = Math.Max(0, LongValue(last, "reasoning_output_tokens")),
                     SessionTotalTokens = Math.Max(0, LongValue(total, "total_tokens"))
                 };

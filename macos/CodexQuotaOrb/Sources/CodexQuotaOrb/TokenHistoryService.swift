@@ -62,6 +62,28 @@ final class TokenHistoryService: @unchecked Sendable {
         self.store = store
     }
 
+    func fixtureSelfTest() -> [String] {
+        let compacted = """
+        {"timestamp":"2026-07-21T04:00:00Z","type":"event_msg","payload":{"type":"token_count","info":{"total_token_usage":{"total_tokens":191751509},"last_token_usage":{"input_tokens":0,"cached_input_tokens":0,"output_tokens":0,"reasoning_output_tokens":0,"total_tokens":45442},"model_context_window":258400}}}
+        """
+        var failures: [String] = []
+        guard let snapshot = parseContext(Data(compacted.utf8)) else {
+            return [
+                "compacted context fixture should parse",
+                "compacted context should derive occupied input",
+                "compacted context should avoid false zero percent"
+            ]
+        }
+        if snapshot.inputTokens != 45_442 {
+            failures.append("compacted context should derive occupied input")
+        }
+        let expectedPercent = Double(45_442) * 100 / Double(258_400)
+        if abs((snapshot.usedPercent ?? -1) - expectedPercent) > 0.001 {
+            failures.append("compacted context should avoid false zero percent")
+        }
+        return failures
+    }
+
     func read() -> TokenHistorySnapshot {
         let files = sessionFiles()
         let context = readCurrentContext()
@@ -216,7 +238,15 @@ final class TokenHistoryService: @unchecked Sendable {
         else { return nil }
 
         let capacity = Self.int64(info["model_context_window"])
-        let input = Self.int64(last["input_tokens"])
+        var input = Self.int64(last["input_tokens"])
+        let lastTotal = max(0, Self.int64(last["total_tokens"]))
+        let output = max(0, Self.int64(last["output_tokens"]))
+        // A compaction-boundary token_count can zero its input components
+        // while last total still carries the compacted context size.
+        // total_tokens is input + output; reasoning is an output subset.
+        if input == 0, lastTotal > output {
+            input = lastTotal - output
+        }
         guard capacity > 0, input >= 0 else { return nil }
         let cached = min(input, max(0, Self.int64(last["cached_input_tokens"])))
         let total = info["total_token_usage"] as? [String: Any]
@@ -227,7 +257,7 @@ final class TokenHistoryService: @unchecked Sendable {
             capacityTokens: capacity,
             inputTokens: input,
             cachedInputTokens: cached,
-            outputTokens: max(0, Self.int64(last["output_tokens"])),
+            outputTokens: output,
             reasoningOutputTokens: max(0, Self.int64(last["reasoning_output_tokens"])),
             sessionTotalTokens: max(0, Self.int64(total?["total_tokens"]))
         )

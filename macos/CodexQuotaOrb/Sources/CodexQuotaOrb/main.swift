@@ -3,10 +3,10 @@ import Darwin
 import Foundation
 
 if CommandLine.arguments.contains("--self-test") {
-    let failures = QuotaService().fixtureSelfTest()
+    let failures = QuotaService().fixtureSelfTest() + TokenHistoryService().fixtureSelfTest()
     let output: [String: Any] = [
         "passed": failures.isEmpty,
-        "tests": 4,
+        "tests": 7,
         "failures": failures
     ]
     let data = try JSONSerialization.data(withJSONObject: output, options: [.sortedKeys])

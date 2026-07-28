@@ -10,10 +10,10 @@
 
 | 平台 | 安装包 | 系统要求 |
 | --- | --- | --- |
-| macOS | [Codex-Quota-Orb-macOS.dmg](https://github.com/huaxing1986q-png/codex-quota-orb/releases/download/v0.4.1/Codex-Quota-Orb-macOS.dmg) | macOS 13+，Apple Silicon / Intel |
-| Windows | [Codex-Quota-Orb-Windows.zip](https://github.com/huaxing1986q-png/codex-quota-orb/releases/download/v0.4.1/Codex-Quota-Orb-Windows.zip) | Windows 10/11 |
+| macOS | [Codex-Quota-Orb-macOS.dmg](https://github.com/huaxing1986q-png/codex-quota-orb/releases/download/v0.4.2/Codex-Quota-Orb-macOS.dmg) | macOS 13+，Apple Silicon / Intel |
+| Windows | [Codex-Quota-Orb-Windows.zip](https://github.com/huaxing1986q-png/codex-quota-orb/releases/download/v0.4.2/Codex-Quota-Orb-Windows.zip) | Windows 10/11 |
 
-两个安装包统一发布在 [`v0.4.1`](https://github.com/huaxing1986q-png/codex-quota-orb/releases/tag/v0.4.1)。
+两个安装包统一发布在 [`v0.4.2`](https://github.com/huaxing1986q-png/codex-quota-orb/releases/tag/v0.4.2)。
 
 ## 特点
 
@@ -57,6 +57,8 @@
 - 上轮输出：`output_tokens`
 - 推理：`reasoning_output_tokens`，属于输出子集
 - 会话累计：当前会话的累计 Token；不与上下文容量相除
+
+Codex 在“压缩上下文”完成的边界时刻，会写出一条输入分项暂为 `0`、但本轮 `total_tokens` 仍包含压缩后上下文大小的记录。插件会在这一种记录上用“本轮总量减去输出”还原当前输入，避免错误闪成 `0%`；不会拿会话累计 Token 冒充上下文占用。
 
 点击详情页中的整块“当前会话上下文”区域，会进入下一层“容量与占用明细”：
 
@@ -113,7 +115,7 @@ dist/Codex-Quota-Orb-macOS.dmg
 
 ### Windows
 
-下载并解压 [`Codex-Quota-Orb-Windows.zip`](https://github.com/huaxing1986q-png/codex-quota-orb/releases/download/v0.4.1/Codex-Quota-Orb-Windows.zip)，在解压目录运行：
+下载并解压 [`Codex-Quota-Orb-Windows.zip`](https://github.com/huaxing1986q-png/codex-quota-orb/releases/download/v0.4.2/Codex-Quota-Orb-Windows.zip)，在解压目录运行：
 
 ```powershell
 powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\Install.ps1
@@ -155,7 +157,7 @@ powershell.exe -NoProfile -ExecutionPolicy Bypass `
 
 配额解析优先按真实周期 `604800` 秒识别周窗口，避免被 `primary` / `secondary` 等字段名误导；兼容 `remaining*`、`used*`、比例和百分数格式。上游未返回可信周窗口时显示不可用，不从其他周期猜测。
 
-上下文容量只读取当前活动会话的最新数值记录，不读取消息正文；占用率为最新 `input_tokens ÷ model_context_window`。项目和对话明细只读取 `session_meta` 中的会话 ID 与工作目录，再与数值 Token 累计关联。Token 历史按本地自然日聚合，缓存只包含文件指纹和每日数字总量，不包含项目路径、会话 ID、上下文明细或消息内容。
+上下文容量只读取当前活动会话的最新数值记录，不读取消息正文；通常占用率为最新 `input_tokens ÷ model_context_window`。压缩边界记录若出现输入分项为零、但本轮总量仍为正，则按“本轮总量减去输出”恢复压缩后的输入占用。项目和对话明细只读取 `session_meta` 中的会话 ID 与工作目录，再与数值 Token 累计关联。Token 历史按本地自然日聚合，缓存只包含文件指纹和每日数字总量，不包含项目路径、会话 ID、上下文明细或消息内容。
 
 ## 刷新与准确性
 
