@@ -1,7 +1,7 @@
 import Foundation
 
 private struct HistoryCacheDocument: Codable {
-    var version = 1
+    var version = 2
     var files: [String: HistoryCacheEntry] = [:]
 }
 
@@ -10,6 +10,11 @@ private struct HistoryCacheEntry: Codable {
     let modified: TimeInterval
     let days: [String: Int64]
     let totalTokens: Int64
+    let contextInputTokens: Int64
+    let cachedInputTokens: Int64
+    let outputTokens: Int64
+    let reasoningOutputTokens: Int64
+    let hasContextBreakdown: Bool
     let firstDay: String?
 }
 
@@ -110,6 +115,15 @@ final class TokenHistoryService: @unchecked Sendable {
             """
             try Data(activeLines.utf8).write(to: active)
             try Data(backgroundLines.utf8).write(to: background)
+            let activeValues = try active.resourceValues(forKeys: [.fileSizeKey, .contentModificationDateKey])
+            let cumulativeEntry = scan(
+                active,
+                length: UInt64(max(0, activeValues.fileSize ?? 0)),
+                modified: activeValues.contentModificationDate?.timeIntervalSince1970 ?? 0
+            )
+            if cumulativeEntry.contextInputTokens != 90 {
+                failures.append("cumulative context should aggregate input across the full conversation")
+            }
             let selected = selectCurrentContext(from: [background, active])
             if selected?.sessionTotalTokens != 300 {
                 failures.append("background compaction should not replace active context")
@@ -128,7 +142,8 @@ final class TokenHistoryService: @unchecked Sendable {
 
     func read() -> TokenHistorySnapshot {
         let files = sessionFiles()
-        let context = readCurrentContext()
+        var context = ContextCapacitySnapshot()
+        context.sampledAt = Date()
         guard !files.isEmpty else {
             return TokenHistorySnapshot(
                 available: true,
@@ -154,6 +169,8 @@ final class TokenHistoryService: @unchecked Sendable {
         var projects: [String: ProjectTokenUsage] = [:]
         var reused = 0
         var earliest: String?
+        var hasCumulativeContext = false
+        var completeContextBreakdown = true
 
         for file in files {
             let key = file.standardizedFileURL.path
@@ -170,7 +187,11 @@ final class TokenHistoryService: @unchecked Sendable {
                 entry = scan(file, length: length, modified: modified)
             }
             nextFiles[key] = entry
-            let conversation = readConversation(file, tokens: entry.totalTokens)
+            var conversation = readConversation(file, tokens: entry.totalTokens)
+            conversation.contextInputTokens = max(0, entry.contextInputTokens)
+            conversation.cachedInputTokens = min(conversation.contextInputTokens, max(0, entry.cachedInputTokens))
+            conversation.outputTokens = max(0, entry.outputTokens)
+            conversation.reasoningOutputTokens = min(conversation.outputTokens, max(0, entry.reasoningOutputTokens))
             conversations.append(conversation)
             let projectKey = conversation.projectPath ?? "(unknown)"
             var project = projects[projectKey] ?? ProjectTokenUsage(
@@ -178,8 +199,21 @@ final class TokenHistoryService: @unchecked Sendable {
                 projectName: conversation.projectName
             )
             project.tokens = safeAdd(project.tokens, conversation.tokens)
+            project.contextInputTokens = safeAdd(project.contextInputTokens, conversation.contextInputTokens)
+            project.cachedInputTokens = safeAdd(project.cachedInputTokens, conversation.cachedInputTokens)
+            project.outputTokens = safeAdd(project.outputTokens, conversation.outputTokens)
+            project.reasoningOutputTokens = safeAdd(project.reasoningOutputTokens, conversation.reasoningOutputTokens)
             project.conversations += 1
             projects[projectKey] = project
+            context.inputTokens = safeAdd(context.inputTokens, conversation.contextInputTokens)
+            context.cachedInputTokens = safeAdd(context.cachedInputTokens, conversation.cachedInputTokens)
+            context.outputTokens = safeAdd(context.outputTokens, conversation.outputTokens)
+            context.reasoningOutputTokens = safeAdd(context.reasoningOutputTokens, conversation.reasoningOutputTokens)
+            if entry.hasContextBreakdown {
+                hasCumulativeContext = true
+            } else if entry.totalTokens > 0 {
+                completeContextBreakdown = false
+            }
             for (day, count) in entry.days {
                 totals[day] = safeAdd(totals[day] ?? 0, count)
             }
@@ -207,6 +241,16 @@ final class TokenHistoryService: @unchecked Sendable {
             .reduce(Int64(0)) { safeAdd($0, $1.tokens) }
         let monthTokens = ordered.filter { $0.day >= monthStart }
             .reduce(Int64(0)) { safeAdd($0, $1.tokens) }
+        context.cachedInputTokens = min(context.inputTokens, context.cachedInputTokens)
+        context.reasoningOutputTokens = min(context.outputTokens, context.reasoningOutputTokens)
+        context.available = hasCumulativeContext
+        context.status = hasCumulativeContext
+            ? (completeContextBreakdown ? "ok" : "partial")
+            : "unavailable"
+        context.inputBreakdownAvailable = hasCumulativeContext && completeContextBreakdown
+        context.sessionTotalTokens = total
+        context.projectCount = projects.count
+        context.conversationCount = conversations.count
 
         return TokenHistorySnapshot(
             available: true,
@@ -223,11 +267,15 @@ final class TokenHistoryService: @unchecked Sendable {
             days: ordered,
             context: context,
             projects: projects.values.sorted {
-                if $0.tokens != $1.tokens { return $0.tokens > $1.tokens }
+                if $0.contextInputTokens != $1.contextInputTokens {
+                    return $0.contextInputTokens > $1.contextInputTokens
+                }
                 return $0.projectName.localizedCaseInsensitiveCompare($1.projectName) == .orderedAscending
             },
             conversations: conversations.sorted {
-                if $0.tokens != $1.tokens { return $0.tokens > $1.tokens }
+                if $0.contextInputTokens != $1.contextInputTokens {
+                    return $0.contextInputTokens > $1.contextInputTokens
+                }
                 return $0.updatedAt > $1.updatedAt
             }
         )
@@ -526,9 +574,29 @@ final class TokenHistoryService: @unchecked Sendable {
         var daily: [String: Int64] = [:]
         var total: Int64 = 0
         var previousCumulative: Int64 = 0
+        var previousInput: Int64 = 0
+        var previousCachedInput: Int64 = 0
+        var previousOutput: Int64 = 0
+        var previousReasoningOutput: Int64 = 0
+        var contextInput: Int64 = 0
+        var cachedInput: Int64 = 0
+        var output: Int64 = 0
+        var reasoningOutput: Int64 = 0
+        var hasContextBreakdown = false
         var firstDay: String?
         guard let reader = try? JSONLineReader(url: file) else {
-            return HistoryCacheEntry(length: length, modified: modified, days: [:], totalTokens: 0, firstDay: nil)
+            return HistoryCacheEntry(
+                length: length,
+                modified: modified,
+                days: [:],
+                totalTokens: 0,
+                contextInputTokens: 0,
+                cachedInputTokens: 0,
+                outputTokens: 0,
+                reasoningOutputTokens: 0,
+                hasContextBreakdown: false,
+                firstDay: nil
+            )
         }
         while true {
             let next: Data?
@@ -565,6 +633,41 @@ final class TokenHistoryService: @unchecked Sendable {
             let localDay = Self.dayFormatter.string(from: timestamp)
             daily[localDay] = safeAdd(daily[localDay] ?? 0, delta)
             total = safeAdd(total, delta)
+            let inputDelta = componentDelta(
+                cumulative: Self.int64(totalUsage?["input_tokens"]),
+                hasCumulative: totalUsage?["input_tokens"] != nil,
+                incremental: Self.int64(lastUsage?["input_tokens"]),
+                hasIncremental: lastUsage?["input_tokens"] != nil,
+                previous: &previousInput
+            )
+            let cachedDelta = componentDelta(
+                cumulative: Self.int64(totalUsage?["cached_input_tokens"]),
+                hasCumulative: totalUsage?["cached_input_tokens"] != nil,
+                incremental: Self.int64(lastUsage?["cached_input_tokens"]),
+                hasIncremental: lastUsage?["cached_input_tokens"] != nil,
+                previous: &previousCachedInput
+            )
+            let outputDelta = componentDelta(
+                cumulative: Self.int64(totalUsage?["output_tokens"]),
+                hasCumulative: totalUsage?["output_tokens"] != nil,
+                incremental: Self.int64(lastUsage?["output_tokens"]),
+                hasIncremental: lastUsage?["output_tokens"] != nil,
+                previous: &previousOutput
+            )
+            let reasoningDelta = componentDelta(
+                cumulative: Self.int64(totalUsage?["reasoning_output_tokens"]),
+                hasCumulative: totalUsage?["reasoning_output_tokens"] != nil,
+                incremental: Self.int64(lastUsage?["reasoning_output_tokens"]),
+                hasIncremental: lastUsage?["reasoning_output_tokens"] != nil,
+                previous: &previousReasoningOutput
+            )
+            contextInput = safeAdd(contextInput, inputDelta)
+            cachedInput = safeAdd(cachedInput, cachedDelta)
+            output = safeAdd(output, outputDelta)
+            reasoningOutput = safeAdd(reasoningOutput, reasoningDelta)
+            if totalUsage?["input_tokens"] != nil || lastUsage?["input_tokens"] != nil {
+                hasContextBreakdown = true
+            }
             if firstDay == nil || localDay < firstDay! { firstDay = localDay }
         }
         return HistoryCacheEntry(
@@ -572,8 +675,34 @@ final class TokenHistoryService: @unchecked Sendable {
             modified: modified,
             days: daily,
             totalTokens: total,
+            contextInputTokens: contextInput,
+            cachedInputTokens: min(contextInput, cachedInput),
+            outputTokens: output,
+            reasoningOutputTokens: min(output, reasoningOutput),
+            hasContextBreakdown: hasContextBreakdown,
             firstDay: firstDay
         )
+    }
+
+    private func componentDelta(
+        cumulative: Int64,
+        hasCumulative: Bool,
+        incremental: Int64,
+        hasIncremental: Bool,
+        previous: inout Int64
+    ) -> Int64 {
+        if hasCumulative {
+            let value = max(0, cumulative)
+            let delta = value >= previous ? value - previous : value
+            previous = value
+            return max(0, delta)
+        }
+        if hasIncremental {
+            let delta = max(0, incremental)
+            previous = safeAdd(previous, delta)
+            return delta
+        }
+        return 0
     }
 
     private func readCache() -> HistoryCacheDocument {
@@ -584,7 +713,7 @@ final class TokenHistoryService: @unchecked Sendable {
             size.intValue <= maxCacheBytes,
             let data = try? Data(contentsOf: store.historyCacheURL),
             let cache = try? JSONDecoder().decode(HistoryCacheDocument.self, from: data),
-            cache.version == 1
+            cache.version == 2
         else { return HistoryCacheDocument() }
         return cache
     }

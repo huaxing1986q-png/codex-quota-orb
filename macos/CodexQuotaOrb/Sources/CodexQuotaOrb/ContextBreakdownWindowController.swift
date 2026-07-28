@@ -197,7 +197,7 @@ private final class ContextBreakdownView: NSView {
 
     private func drawHeader() {
         drawText(
-            language == .chinese ? "容量与占用明细" : "CAPACITY AND USAGE DETAILS",
+            language == .chinese ? "累计上下文与占用明细" : "CUMULATIVE CONTEXT AND USAGE DETAILS",
             in: NSRect(x: 126, y: 23, width: bounds.width - 154, height: 31),
             font: Typography.system(24, weight: .bold),
             color: Palette.text
@@ -205,16 +205,16 @@ private final class ContextBreakdownView: NSView {
         let subtitle: String
         if selected == .projects {
             subtitle = language == .chinese
-                ? "按项目路径聚合所有本机会话，并显示每个项目的 Token 占比"
-                : "All local sessions grouped by project path with each project's Token share"
+                ? "按项目路径聚合全部对话，并显示每个项目的累计上下文占比"
+                : "All conversations grouped by project path with cumulative context share"
         } else if selected == .conversations {
             subtitle = language == .chinese
-                ? "按 Token 从大到小列出每个对话；暖色表示大容量对话"
-                : "Every conversation sorted by Token volume; warm colors flag large conversations"
+                ? "按累计上下文从大到小列出每个对话；暖色表示高占用对话"
+                : "Every conversation sorted by cumulative context; warm colors flag high usage"
         } else {
             subtitle = language == .chinese
-                ? "容量只拆分为缓存输入、新增输入与剩余空间，三者不会重复计算"
-                : "Capacity is split into cached input, fresh input, and remaining space without double counting"
+                ? "累计上下文输入拆分为缓存复用与新增输入；不使用当前对话或单次窗口容量"
+                : "Cumulative context input is split into cached and fresh input; no active-chat window is used"
         }
         drawText(
             subtitle,
@@ -226,7 +226,7 @@ private final class ContextBreakdownView: NSView {
 
     private func drawTabs() {
         let labels: [(ContextBreakdownSection, String)] = [
-            (.capacity, language == .chinese ? "容量结构" : "CAPACITY"),
+            (.capacity, language == .chinese ? "上下文结构" : "CONTEXT"),
             (.projects, language == .chinese ? "项目占比" : "PROJECTS"),
             (.conversations, language == .chinese ? "对话明细" : "CONVERSATIONS")
         ]
@@ -276,9 +276,9 @@ private final class ContextBreakdownView: NSView {
         }
 
         let context = snapshot.context
-        guard context.available, context.capacityTokens > 0 else {
+        guard context.available, context.inputTokens > 0 else {
             drawText(
-                language == .chinese ? "当前活动会话尚无可用的上下文容量记录" : "No context capacity record is available for the active session",
+                language == .chinese ? "本地历史中尚无可用的累计上下文记录" : "No cumulative context record is available in local history",
                 in: NSRect(x: panel.minX + 40, y: panel.midY - 14, width: panel.width - 80, height: 28),
                 font: Typography.system(15, weight: .semibold),
                 color: Palette.secondary,
@@ -287,21 +287,20 @@ private final class ContextBreakdownView: NSView {
             return
         }
 
-        let capacity = context.capacityTokens
-        let occupied = min(capacity, max(0, context.inputTokens))
+        let cumulative = max(0, context.inputTokens)
         let hasBreakdown = context.inputBreakdownAvailable
-        let cached = hasBreakdown ? min(occupied, max(0, context.cachedInputTokens)) : 0
-        let fresh = hasBreakdown ? min(max(0, occupied - cached), max(0, context.freshInputTokens)) : 0
-        let unknown = hasBreakdown ? 0 : occupied
-        let remaining = max(0, capacity - occupied)
-        let cachedPercent = Double(cached) * 100 / Double(capacity)
-        let freshPercent = Double(fresh) * 100 / Double(capacity)
-        let unknownPercent = Double(unknown) * 100 / Double(capacity)
-        let remainingPercent = Double(remaining) * 100 / Double(capacity)
+        let cached = hasBreakdown ? min(cumulative, max(0, context.cachedInputTokens)) : 0
+        let fresh = hasBreakdown ? max(0, cumulative - cached) : 0
+        let unknown = hasBreakdown ? 0 : cumulative
+        let cachedPercent = Double(cached) * 100 / Double(cumulative)
+        let freshPercent = Double(fresh) * 100 / Double(cumulative)
+        let unknownPercent = Double(unknown) * 100 / Double(cumulative)
+        let totalShare = snapshot.totalTokens > 0
+            ? min(100, Double(cumulative) * 100 / Double(snapshot.totalTokens))
+            : 0
         let cachedColor = Palette.accent
         let freshColor = NSColor(calibratedRed: 112 / 255, green: 87 / 255, blue: 205 / 255, alpha: 1)
         let unknownColor = NSColor(calibratedRed: 103 / 255, green: 116 / 255, blue: 134 / 255, alpha: 1)
-        let remainingColor = statusColor(remainingPercent)
 
         let ringRect = NSRect(x: panel.minX + 66, y: panel.minY + 96, width: 174, height: 174)
         drawRing(
@@ -309,27 +308,26 @@ private final class ContextBreakdownView: NSView {
             values: [
                 (cachedPercent, cachedColor),
                 (freshPercent, freshColor),
-                (unknownPercent, unknownColor),
-                (remainingPercent, remainingColor)
+                (unknownPercent, unknownColor)
             ]
         )
-        let percent = String(format: "%.0f%%", context.usedPercent ?? 0)
         drawText(
-            percent,
+            formatTokens(cumulative, language: language),
             in: NSRect(x: ringRect.minX + 24, y: ringRect.minY + 54, width: ringRect.width - 48, height: 42),
             font: Typography.mono(31, weight: .semibold),
             color: Palette.text,
             alignment: .center
         )
         drawText(
-            language == .chinese ? "已占用" : "USED",
+            language == .chinese ? "累计上下文" : "CUMULATIVE CONTEXT",
             in: NSRect(x: ringRect.minX + 24, y: ringRect.minY + 96, width: ringRect.width - 48, height: 18),
             font: Typography.system(10.5),
             color: Palette.secondary,
             alignment: .center
         )
         drawText(
-            (language == .chinese ? "总容量 " : "CAPACITY ") + formatTokens(capacity, language: language),
+            (language == .chinese ? "占本机总 Token " : "SHARE OF LOCAL TOKEN ")
+                + String(format: "%.1f%%", totalShare),
             in: NSRect(x: ringRect.minX - 10, y: ringRect.maxY + 18, width: ringRect.width + 20, height: 18),
             font: Typography.mono(10),
             color: Palette.secondary,
@@ -339,7 +337,7 @@ private final class ContextBreakdownView: NSView {
         let rightX = panel.minX + 306
         let rightWidth = panel.maxX - rightX - 30
         drawText(
-            language == .chinese ? "容量构成" : "CAPACITY STRUCTURE",
+            language == .chinese ? "累计上下文构成" : "CUMULATIVE CONTEXT STRUCTURE",
             in: NSRect(x: rightX, y: panel.minY + 34, width: rightWidth, height: 24),
             font: Typography.system(16, weight: .semibold),
             color: Palette.text
@@ -349,8 +347,7 @@ private final class ContextBreakdownView: NSView {
             values: [
                 (cachedPercent, cachedColor),
                 (freshPercent, freshColor),
-                (unknownPercent, unknownColor),
-                (remainingPercent, remainingColor)
+                (unknownPercent, unknownColor)
             ]
         )
         if hasBreakdown {
@@ -358,11 +355,11 @@ private final class ContextBreakdownView: NSView {
                 x: rightX,
                 y: panel.minY + 110,
                 width: rightWidth,
-                label: language == .chinese ? "缓存输入" : "CACHED INPUT",
+                label: language == .chinese ? "缓存复用" : "CACHED INPUT",
                 value: cached,
                 percent: cachedPercent,
                 color: cachedColor,
-                note: language == .chinese ? "属于输入子集" : "SUBSET OF INPUT"
+                note: language == .chinese ? "累计上下文输入子集" : "SUBSET OF CUMULATIVE CONTEXT INPUT"
             )
             drawSegment(
                 x: rightX,
@@ -372,18 +369,18 @@ private final class ContextBreakdownView: NSView {
                 value: fresh,
                 percent: freshPercent,
                 color: freshColor,
-                note: language == .chinese ? "本轮未缓存输入" : "UNCACHED INPUT THIS TURN"
+                note: language == .chinese ? "累计未缓存输入" : "CUMULATIVE UNCACHED INPUT"
             )
         } else {
             drawSegment(
                 x: rightX,
                 y: panel.minY + 110,
                 width: rightWidth,
-                label: language == .chinese ? "已占用（未拆分）" : "OCCUPIED (NOT SPLIT)",
+                label: language == .chinese ? "累计输入（未拆分）" : "CUMULATIVE INPUT (NOT SPLIT)",
                 value: unknown,
                 percent: unknownPercent,
                 color: unknownColor,
-                note: language == .chinese ? "压缩记录只保留总占用" : "COMPACTION KEEPS TOTAL OCCUPANCY ONLY"
+                note: language == .chinese ? "部分旧记录未提供缓存明细" : "SOME OLD RECORDS LACK CACHE DETAILS"
             )
             drawSegmentText(
                 x: rightX,
@@ -399,32 +396,32 @@ private final class ContextBreakdownView: NSView {
             x: rightX,
             y: panel.minY + 238,
             width: rightWidth,
-            label: language == .chinese ? "剩余容量" : "REMAINING",
-            value: remaining,
-            percent: remainingPercent,
-            color: remainingColor,
-            note: guidance(remainingPercent)
+            label: language == .chinese ? "累计上下文输入" : "CUMULATIVE CONTEXT INPUT",
+            value: cumulative,
+            percent: 100,
+            color: Palette.healthy,
+            note: language == .chinese ? "全部项目与对话汇总" : "ALL PROJECTS AND CONVERSATIONS"
         )
 
         let footer = NSRect(x: rightX, y: panel.maxY - 92, width: rightWidth, height: 68)
         Palette.stroke.withAlpha(0.22).setFill()
         roundedPath(footer, radius: 12).fill()
         drawText(
-            language == .chinese ? "非容量占用指标" : "NOT PART OF CAPACITY OCCUPANCY",
+            language == .chinese ? "非上下文指标" : "NOT PART OF CONTEXT INPUT",
             in: NSRect(x: footer.minX + 16, y: footer.minY + 10, width: footer.width - 32, height: 17),
             font: Typography.system(10.5, weight: .medium),
             color: Palette.text
         )
         let footerText: String
         if language == .chinese {
-            footerText = "上轮输出 \(formatTokens(context.outputTokens, language: language))"
+            footerText = "累计输出 \(formatTokens(context.outputTokens, language: language))"
                 + " · 推理 \(formatTokens(context.reasoningOutputTokens, language: language))（输出子集）"
-                + " · 会话累计 \(formatTokens(context.sessionTotalTokens, language: language))"
+                + " · 本机总 Token \(formatTokens(snapshot.totalTokens, language: language))"
                 + contextSampleSuffix(context)
         } else {
-            footerText = "LAST OUTPUT \(formatTokens(context.outputTokens, language: language))"
+            footerText = "CUMULATIVE OUTPUT \(formatTokens(context.outputTokens, language: language))"
                 + " · REASONING \(formatTokens(context.reasoningOutputTokens, language: language)) (OUTPUT SUBSET)"
-                + " · SESSION CUMULATIVE \(formatTokens(context.sessionTotalTokens, language: language))"
+                + " · LOCAL TOKEN TOTAL \(formatTokens(snapshot.totalTokens, language: language))"
                 + contextSampleSuffix(context)
         }
         drawText(
@@ -437,12 +434,12 @@ private final class ContextBreakdownView: NSView {
 
     private func drawProjects(in panel: NSRect) {
         let content = panel.insetBy(dx: 22, dy: 22)
-        let total = max(Int64(1), snapshot.totalTokens)
+        let total = max(Int64(1), snapshot.context.inputTokens)
         let columns: [(String, CGFloat, NSTextAlignment)] = [
             (language == .chinese ? "项目" : "PROJECT", 0.18, .left),
             (language == .chinese ? "项目路径" : "PROJECT PATH", 0.42, .left),
-            ("TOKEN", 0.16, .right),
-            (language == .chinese ? "总占比" : "TOTAL SHARE", 0.14, .right),
+            (language == .chinese ? "上下文" : "CONTEXT", 0.16, .right),
+            (language == .chinese ? "累计占比" : "CUMULATIVE", 0.14, .right),
             (language == .chinese ? "对话数" : "CHATS", 0.10, .right)
         ]
         drawTableHeader(columns, in: NSRect(x: content.minX, y: content.minY, width: content.width - 10, height: 28))
@@ -464,12 +461,12 @@ private final class ContextBreakdownView: NSView {
                 Palette.stroke.withAlpha(0.12).setFill()
                 roundedPath(row, radius: 8).fill()
             }
-            let share = Double(project.tokens) * 100 / Double(total)
+            let share = Double(project.contextInputTokens) * 100 / Double(total)
             let color = share >= 25 ? Palette.critical : (share >= 10 ? Palette.caution : Palette.text)
             let values = [
                 project.projectName,
                 project.projectPath ?? "—",
-                formatTokens(project.tokens, language: language),
+                formatTokens(project.contextInputTokens, language: language),
                 String(format: "%.1f%%", share),
                 "\(project.conversations)"
             ]
@@ -482,15 +479,15 @@ private final class ContextBreakdownView: NSView {
 
     private func drawConversations(in panel: NSRect) {
         let content = panel.insetBy(dx: 22, dy: 22)
-        let total = max(Int64(1), snapshot.totalTokens)
+        let total = max(Int64(1), snapshot.context.inputTokens)
         let projectTotals = Dictionary(uniqueKeysWithValues: snapshot.projects.map {
-            (($0.projectPath ?? "(unknown)"), $0.tokens)
+            (($0.projectPath ?? "(unknown)"), $0.contextInputTokens)
         })
         let columns: [(String, CGFloat, NSTextAlignment)] = [
             (language == .chinese ? "对话" : "CONVERSATION", 0.24, .left),
             (language == .chinese ? "项目" : "PROJECT", 0.18, .left),
-            ("TOKEN", 0.16, .right),
-            (language == .chinese ? "总占比" : "TOTAL", 0.12, .right),
+            (language == .chinese ? "上下文" : "CONTEXT", 0.16, .right),
+            (language == .chinese ? "累计占比" : "CUMULATIVE", 0.12, .right),
             (language == .chinese ? "项目内" : "PROJECT", 0.13, .right),
             (language == .chinese ? "最后活动" : "UPDATED", 0.17, .right)
         ]
@@ -513,9 +510,12 @@ private final class ContextBreakdownView: NSView {
                 Palette.stroke.withAlpha(0.12).setFill()
                 roundedPath(row, radius: 8).fill()
             }
-            let totalShare = Double(conversation.tokens) * 100 / Double(total)
-            let projectTotal = max(Int64(1), projectTotals[conversation.projectPath ?? "(unknown)"] ?? conversation.tokens)
-            let projectShare = Double(conversation.tokens) * 100 / Double(projectTotal)
+            let totalShare = Double(conversation.contextInputTokens) * 100 / Double(total)
+            let projectTotal = max(
+                Int64(1),
+                projectTotals[conversation.projectPath ?? "(unknown)"] ?? conversation.contextInputTokens
+            )
+            let projectShare = Double(conversation.contextInputTokens) * 100 / Double(projectTotal)
             let shortID = String(conversation.sessionID.prefix(8))
             let started = DateFormatter.localizedString(from: conversation.startedAt, dateStyle: .short, timeStyle: .short)
             let updated = DateFormatter.localizedString(from: conversation.updatedAt, dateStyle: .short, timeStyle: .short)
@@ -523,7 +523,7 @@ private final class ContextBreakdownView: NSView {
             let values = [
                 started + " · " + shortID,
                 conversation.projectName,
-                formatTokens(conversation.tokens, language: language),
+                formatTokens(conversation.contextInputTokens, language: language),
                 String(format: "%.1f%%", totalShare),
                 String(format: "%.1f%%", projectShare),
                 updated
@@ -680,7 +680,7 @@ private final class ContextBreakdownView: NSView {
     private func contextSampleSuffix(_ context: ContextCapacitySnapshot) -> String {
         guard let sampledAt = context.sampledAt else { return "" }
         let time = DateFormatter.localizedString(from: sampledAt, dateStyle: .none, timeStyle: .medium)
-        return language == .chinese ? " · 上下文采样 \(time)" : " · SAMPLED \(time)"
+        return language == .chinese ? " · 更新 \(time)" : " · UPDATED \(time)"
     }
 
     private func statusColor(_ remainingPercent: Double) -> NSColor {

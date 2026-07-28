@@ -65,6 +65,8 @@ struct ContextCapacitySnapshot {
     var outputTokens: Int64 = 0
     var reasoningOutputTokens: Int64 = 0
     var sessionTotalTokens: Int64 = 0
+    var projectCount = 0
+    var conversationCount = 0
 
     var freshInputTokens: Int64 {
         max(0, inputTokens - cachedInputTokens)
@@ -87,12 +89,20 @@ struct ConversationTokenUsage {
     var startedAt = Date.distantPast
     var updatedAt = Date.distantPast
     var tokens: Int64 = 0
+    var contextInputTokens: Int64 = 0
+    var cachedInputTokens: Int64 = 0
+    var outputTokens: Int64 = 0
+    var reasoningOutputTokens: Int64 = 0
 }
 
 struct ProjectTokenUsage {
     var projectPath: String?
     var projectName = "Unknown project"
     var tokens: Int64 = 0
+    var contextInputTokens: Int64 = 0
+    var cachedInputTokens: Int64 = 0
+    var outputTokens: Int64 = 0
+    var reasoningOutputTokens: Int64 = 0
     var conversations = 0
 }
 

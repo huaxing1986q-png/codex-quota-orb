@@ -41,7 +41,7 @@ namespace CodexMonitor
             history = initial ?? new TokenHistorySnapshot();
             chinese = chineseValue;
             uiScale = Math.Max(1f, initialScale);
-            Text = chinese ? "容量与占用明细" : "Capacity and usage details";
+            Text = chinese ? "累计上下文与占用明细" : "Cumulative context and usage details";
             FormBorderStyle = FormBorderStyle.Sizable;
             StartPosition = FormStartPosition.Manual;
             ShowInTaskbar = false;
@@ -174,16 +174,16 @@ namespace CodexMonitor
 
         private void UpdateLanguage()
         {
-            Text = chinese ? "容量与占用明细" : "Capacity and usage details";
+            Text = chinese ? "累计上下文与占用明细" : "Cumulative context and usage details";
             backButton.Text = chinese ? "返回" : "Back";
             backButton.AccessibleName = chinese ? "返回 Token 使用详情" : "Return to token usage details";
             Font previous = backButton.Font;
             backButton.Font = PixelFont("Microsoft YaHei UI", 10.5f * uiScale, FontStyle.Bold);
             if (previous != null && !Object.ReferenceEquals(previous, Control.DefaultFont)) previous.Dispose();
-            capacityButton.Text = chinese ? "容量结构" : "Capacity";
+            capacityButton.Text = chinese ? "上下文结构" : "Context";
             projectsButton.Text = chinese ? "项目占比" : "Projects";
             conversationsButton.Text = chinese ? "对话明细" : "Conversations";
-            capacityButton.AccessibleName = chinese ? "查看上下文容量结构" : "View context capacity structure";
+            capacityButton.AccessibleName = chinese ? "查看累计上下文结构" : "View cumulative context structure";
             projectsButton.AccessibleName = chinese ? "查看每个项目占比" : "View usage by project";
             conversationsButton.AccessibleName = chinese ? "查看每个对话占用量" : "View usage by conversation";
             Font projectFont = projectsList.Font;
@@ -219,8 +219,8 @@ namespace CodexMonitor
             projectsList.Columns.Clear();
             projectsList.Columns.Add(chinese ? "项目" : "Project", Scale(150));
             projectsList.Columns.Add(chinese ? "项目路径" : "Project path", Scale(320));
-            projectsList.Columns.Add("Token", Scale(110), HorizontalAlignment.Right);
-            projectsList.Columns.Add(chinese ? "总占比" : "Total share", Scale(90), HorizontalAlignment.Right);
+            projectsList.Columns.Add(chinese ? "上下文" : "Context input", Scale(110), HorizontalAlignment.Right);
+            projectsList.Columns.Add(chinese ? "累计占比" : "Cumulative share", Scale(90), HorizontalAlignment.Right);
             projectsList.Columns.Add(chinese ? "对话数" : "Chats", Scale(72), HorizontalAlignment.Right);
             projectsList.EndUpdate();
 
@@ -228,8 +228,8 @@ namespace CodexMonitor
             conversationsList.Columns.Clear();
             conversationsList.Columns.Add(chinese ? "对话" : "Conversation", Scale(180));
             conversationsList.Columns.Add(chinese ? "项目" : "Project", Scale(140));
-            conversationsList.Columns.Add("Token", Scale(110), HorizontalAlignment.Right);
-            conversationsList.Columns.Add(chinese ? "总占比" : "Total share", Scale(90), HorizontalAlignment.Right);
+            conversationsList.Columns.Add(chinese ? "上下文" : "Context input", Scale(110), HorizontalAlignment.Right);
+            conversationsList.Columns.Add(chinese ? "累计占比" : "Cumulative share", Scale(90), HorizontalAlignment.Right);
             conversationsList.Columns.Add(chinese ? "项目内占比" : "Project share", Scale(100), HorizontalAlignment.Right);
             conversationsList.Columns.Add(chinese ? "最后活动" : "Updated", Scale(120));
             conversationsList.EndUpdate();
@@ -238,23 +238,23 @@ namespace CodexMonitor
         private void UpdateLists()
         {
             if (projectsList == null || conversationsList == null || history == null) return;
-            long total = Math.Max(1, history.TotalTokens);
+            long total = Math.Max(1, history.Context == null ? 0 : history.Context.InputTokens);
             System.Collections.Generic.Dictionary<string, long> projectTotals =
                 new System.Collections.Generic.Dictionary<string, long>(StringComparer.OrdinalIgnoreCase);
             foreach (ProjectTokenUsage project in history.Projects)
             {
                 string key = String.IsNullOrWhiteSpace(project.ProjectPath) ? "(unknown)" : project.ProjectPath;
-                projectTotals[key] = project.Tokens;
+                projectTotals[key] = project.ContextInputTokens;
             }
 
             projectsList.BeginUpdate();
             projectsList.Items.Clear();
             foreach (ProjectTokenUsage project in history.Projects)
             {
-                double share = project.Tokens * 100d / total;
+                double share = project.ContextInputTokens * 100d / total;
                 ListViewItem item = new ListViewItem(String.IsNullOrWhiteSpace(project.ProjectName) ? (chinese ? "未知项目" : "Unknown project") : project.ProjectName);
                 item.SubItems.Add(String.IsNullOrWhiteSpace(project.ProjectPath) ? "—" : project.ProjectPath);
-                item.SubItems.Add(FormatTokens(project.Tokens, chinese));
+                item.SubItems.Add(FormatTokens(project.ContextInputTokens, chinese));
                 item.SubItems.Add(share.ToString("0.0", CultureInfo.CurrentCulture) + "%");
                 item.SubItems.Add(project.Conversations.ToString(CultureInfo.CurrentCulture));
                 item.ToolTipText = String.IsNullOrWhiteSpace(project.ProjectPath) ? project.ProjectName : project.ProjectPath;
@@ -270,16 +270,16 @@ namespace CodexMonitor
             {
                 string key = String.IsNullOrWhiteSpace(conversation.ProjectPath) ? "(unknown)" : conversation.ProjectPath;
                 long projectTotal;
-                if (!projectTotals.TryGetValue(key, out projectTotal)) projectTotal = conversation.Tokens;
-                double totalShare = conversation.Tokens * 100d / total;
-                double projectShare = projectTotal <= 0 ? 0 : conversation.Tokens * 100d / projectTotal;
+                if (!projectTotals.TryGetValue(key, out projectTotal)) projectTotal = conversation.ContextInputTokens;
+                double totalShare = conversation.ContextInputTokens * 100d / total;
+                double projectShare = projectTotal <= 0 ? 0 : conversation.ContextInputTokens * 100d / projectTotal;
                 string id = String.IsNullOrWhiteSpace(conversation.SessionId)
                     ? "unknown"
                     : conversation.SessionId.Substring(0, Math.Min(8, conversation.SessionId.Length));
                 string label = conversation.StartedLocal.ToString(chinese ? "M-d HH:mm" : "MMM d HH:mm", CultureInfo.CurrentCulture) + " · " + id;
                 ListViewItem item = new ListViewItem(label);
                 item.SubItems.Add(String.IsNullOrWhiteSpace(conversation.ProjectName) ? (chinese ? "未知项目" : "Unknown") : conversation.ProjectName);
-                item.SubItems.Add(FormatTokens(conversation.Tokens, chinese));
+                item.SubItems.Add(FormatTokens(conversation.ContextInputTokens, chinese));
                 item.SubItems.Add(totalShare.ToString("0.0", CultureInfo.CurrentCulture) + "%");
                 item.SubItems.Add(projectShare.ToString("0.0", CultureInfo.CurrentCulture) + "%");
                 item.SubItems.Add(conversation.UpdatedLocal.ToString(chinese ? "M-d HH:mm" : "MMM d HH:mm", CultureInfo.CurrentCulture));
@@ -338,15 +338,15 @@ namespace CodexMonitor
             using (SolidBrush ink = new SolidBrush(Color.FromArgb(23, 29, 37)))
             using (SolidBrush secondary = new SolidBrush(Color.FromArgb(75, 87, 101)))
             {
-                g.DrawString(chinese ? "容量与占用明细" : "Capacity and usage details", titleFont, ink, 126, 22);
+                g.DrawString(chinese ? "累计上下文与占用明细" : "Cumulative context and usage details", titleFont, ink, 126, 22);
                 string subtitle;
                 if (activeView == ContextBreakdownView.Projects)
-                    subtitle = chinese ? "按项目路径聚合所有本机会话，并显示每个项目的 Token 占比" : "All local sessions grouped by project path with each project's Token share";
+                    subtitle = chinese ? "按项目路径聚合全部对话，并显示每个项目的累计上下文占比" : "All conversations grouped by project path with cumulative context share";
                 else if (activeView == ContextBreakdownView.Conversations)
-                    subtitle = chinese ? "按 Token 从大到小列出每个对话；暖色表示大容量对话" : "Every conversation sorted by Token volume; warm colors flag large conversations";
+                    subtitle = chinese ? "按累计上下文从大到小列出每个对话；暖色表示高占用对话" : "Every conversation sorted by cumulative context; warm colors flag high usage";
                 else
-                    subtitle = chinese ? "容量只拆分为缓存输入、新增输入与剩余空间，三者不会重复计算"
-                        : "Capacity is split into cached input, fresh input, and remaining space without double counting";
+                    subtitle = chinese ? "累计上下文输入拆分为缓存复用与新增输入；不使用当前对话或单次窗口容量"
+                        : "Cumulative context input is split into cached and fresh input; no active-chat window is used";
                 g.DrawString(
                     subtitle,
                     subtitleFont, secondary, 126, 58);
@@ -362,43 +362,41 @@ namespace CodexMonitor
 
             if (activeView != ContextBreakdownView.Capacity) return;
             ContextCapacitySnapshot context = history == null ? null : history.Context;
-            if (context == null || !context.Available || context.CapacityTokens <= 0)
+            if (context == null || !context.Available || context.InputTokens <= 0)
             {
                 using (SolidBrush secondary = new SolidBrush(Color.FromArgb(75, 87, 101)))
-                    g.DrawString(chinese ? "当前活动会话尚无可用的上下文容量记录" : "No context capacity record is available for the active session",
+                    g.DrawString(chinese ? "本地历史中尚无可用的累计上下文记录" : "No cumulative context record is available in local history",
                         sectionFont, secondary, panel.X + 40, panel.Y + panel.Height / 2 - 16);
                 return;
             }
 
-            long capacity = context.CapacityTokens;
-            long occupied = Math.Min(capacity, Math.Max(0, context.InputTokens));
+            long cumulative = Math.Max(0, context.InputTokens);
             bool hasBreakdown = context.InputBreakdownAvailable;
-            long cached = hasBreakdown ? Math.Min(occupied, Math.Max(0, context.CachedInputTokens)) : 0;
-            long fresh = hasBreakdown ? Math.Min(Math.Max(0, occupied - cached), Math.Max(0, context.FreshInputTokens)) : 0;
-            long unknown = hasBreakdown ? 0 : occupied;
-            long remaining = Math.Max(0, capacity - occupied);
-            double cachedPercent = cached * 100d / capacity;
-            double freshPercent = fresh * 100d / capacity;
-            double unknownPercent = unknown * 100d / capacity;
-            double remainingPercent = remaining * 100d / capacity;
+            long cached = hasBreakdown ? Math.Min(cumulative, Math.Max(0, context.CachedInputTokens)) : 0;
+            long fresh = hasBreakdown ? Math.Max(0, cumulative - cached) : 0;
+            long unknown = hasBreakdown ? 0 : cumulative;
+            double cachedPercent = cached * 100d / cumulative;
+            double freshPercent = fresh * 100d / cumulative;
+            double unknownPercent = unknown * 100d / cumulative;
+            double totalShare = history.TotalTokens <= 0 ? 0 : Math.Min(100, cumulative * 100d / history.TotalTokens);
             Color cachedColor = Color.FromArgb(57, 122, 224);
             Color freshColor = Color.FromArgb(112, 87, 205);
             Color unknownColor = Color.FromArgb(103, 116, 134);
-            Color remainingColor = RemainingColor(remainingPercent);
 
             DrawRing(g, new Rectangle(panel.X + 48, panel.Y + 78, 210, 210),
-                cachedPercent, freshPercent, unknownPercent, remainingPercent,
-                cachedColor, freshColor, unknownColor, remainingColor);
+                cachedPercent, freshPercent, unknownPercent, 0,
+                cachedColor, freshColor, unknownColor, Color.Transparent);
             using (SolidBrush ink = new SolidBrush(Color.FromArgb(23, 29, 37)))
             using (SolidBrush secondary = new SolidBrush(Color.FromArgb(75, 87, 101)))
             {
-                string percent = context.UsedPercent.ToString("0", CultureInfo.CurrentCulture) + "%";
-                SizeF percentSize = g.MeasureString(percent, percentFont);
-                g.DrawString(percent, percentFont, ink, panel.X + 153 - percentSize.Width / 2, panel.Y + 144);
-                string label = chinese ? "已占用" : "used";
+                string amount = FormatTokens(cumulative, chinese);
+                SizeF amountSize = g.MeasureString(amount, percentFont);
+                g.DrawString(amount, percentFont, ink, panel.X + 153 - amountSize.Width / 2, panel.Y + 144);
+                string label = chinese ? "累计上下文" : "cumulative context";
                 SizeF labelSize = g.MeasureString(label, labelFont);
                 g.DrawString(label, labelFont, secondary, panel.X + 153 - labelSize.Width / 2, panel.Y + 184);
-                string total = (chinese ? "总容量 " : "Capacity ") + FormatTokens(capacity, chinese);
+                string total = (chinese ? "占本机总 Token " : "Share of local Token ")
+                    + totalShare.ToString("0.0", CultureInfo.CurrentCulture) + "%";
                 SizeF totalSize = g.MeasureString(total, metaFont);
                 g.DrawString(total, metaFont, secondary, panel.X + 153 - totalSize.Width / 2, panel.Y + 214);
             }
@@ -406,28 +404,29 @@ namespace CodexMonitor
             int rightX = panel.X + 306;
             int rightWidth = panel.Right - rightX - 30;
             using (SolidBrush ink = new SolidBrush(Color.FromArgb(23, 29, 37)))
-                g.DrawString(chinese ? "容量构成" : "Capacity structure", sectionFont, ink, rightX, panel.Y + 34);
+                g.DrawString(chinese ? "累计上下文构成" : "Cumulative context structure", sectionFont, ink, rightX, panel.Y + 34);
             DrawStackedBar(g, new Rectangle(rightX, panel.Y + 72, rightWidth, 14),
-                cachedPercent, freshPercent, unknownPercent, remainingPercent,
-                cachedColor, freshColor, unknownColor, remainingColor);
+                cachedPercent, freshPercent, unknownPercent, 0,
+                cachedColor, freshColor, unknownColor, Color.Transparent);
             if (hasBreakdown)
             {
-                DrawSegmentRow(g, rightX, panel.Y + 110, rightWidth, chinese ? "缓存输入" : "Cached input",
-                    cached, cachedPercent, cachedColor, chinese ? "属于输入子集" : "subset of input");
+                DrawSegmentRow(g, rightX, panel.Y + 110, rightWidth, chinese ? "缓存复用" : "Cached input",
+                    cached, cachedPercent, cachedColor, chinese ? "累计上下文输入子集" : "subset of cumulative context input");
                 DrawSegmentRow(g, rightX, panel.Y + 174, rightWidth, chinese ? "新增输入" : "Fresh input",
-                    fresh, freshPercent, freshColor, chinese ? "本轮未缓存输入" : "uncached input this turn");
+                    fresh, freshPercent, freshColor, chinese ? "累计未缓存输入" : "cumulative uncached input");
             }
             else
             {
-                DrawSegmentRow(g, rightX, panel.Y + 110, rightWidth, chinese ? "已占用（未拆分）" : "Occupied (not split)",
+                DrawSegmentRow(g, rightX, panel.Y + 110, rightWidth, chinese ? "累计输入（未拆分）" : "Cumulative input (not split)",
                     unknown, unknownPercent, unknownColor,
-                    chinese ? "压缩记录只保留总占用" : "compaction record keeps total occupancy only");
+                    chinese ? "部分旧记录未提供缓存明细" : "some old records lack cache details");
                 DrawSegmentTextRow(g, rightX, panel.Y + 174, rightWidth, chinese ? "缓存 / 新增" : "Cached / fresh",
                     "—", unknownColor,
                     chinese ? "原始记录未提供明细" : "source record has no breakdown");
             }
-            DrawSegmentRow(g, rightX, panel.Y + 238, rightWidth, chinese ? "剩余容量" : "Remaining",
-                remaining, remainingPercent, remainingColor, Guidance(remainingPercent));
+            DrawSegmentRow(g, rightX, panel.Y + 238, rightWidth, chinese ? "累计上下文输入" : "Cumulative context input",
+                cumulative, 100, Color.FromArgb(52, 196, 125),
+                chinese ? "全部项目与对话汇总" : "all projects and conversations");
 
             int footerY = panel.Bottom - 92;
             Rectangle footer = new Rectangle(rightX, footerY, rightWidth, 68);
@@ -437,15 +436,15 @@ namespace CodexMonitor
             using (SolidBrush ink = new SolidBrush(Color.FromArgb(35, 46, 58)))
             using (SolidBrush secondary = new SolidBrush(Color.FromArgb(75, 87, 101)))
             {
-                g.DrawString(chinese ? "非容量占用指标" : "Not part of capacity occupancy", labelFont, ink, footer.X + 16, footer.Y + 10);
+                g.DrawString(chinese ? "非上下文指标" : "Not part of context input", labelFont, ink, footer.X + 16, footer.Y + 10);
                 string values = chinese
-                    ? "上轮输出 " + FormatTokens(context.OutputTokens, true)
+                    ? "累计输出 " + FormatTokens(context.OutputTokens, true)
                         + " · 推理 " + FormatTokens(context.ReasoningOutputTokens, true)
-                        + "（输出子集） · 会话累计 " + FormatTokens(context.SessionTotalTokens, true)
+                        + "（输出子集） · 本机总 Token " + FormatTokens(history.TotalTokens, true)
                         + ContextSampleSuffix(context, true)
-                    : "Last output " + FormatTokens(context.OutputTokens, false)
+                    : "Cumulative output " + FormatTokens(context.OutputTokens, false)
                         + " · reasoning " + FormatTokens(context.ReasoningOutputTokens, false)
-                        + " (output subset) · session cumulative " + FormatTokens(context.SessionTotalTokens, false)
+                        + " (output subset) · local Token total " + FormatTokens(history.TotalTokens, false)
                         + ContextSampleSuffix(context, false);
                 g.DrawString(values, metaFont, secondary, new RectangleF(footer.X + 16, footer.Y + 37, footer.Width - 32, 18));
             }
@@ -517,7 +516,7 @@ namespace CodexMonitor
         {
             if (context == null || context.SampleUtc == DateTime.MinValue) return String.Empty;
             string time = context.SampleUtc.ToLocalTime().ToString("HH:mm:ss", CultureInfo.CurrentCulture);
-            return chinese ? " · 上下文采样 " + time : " · sampled " + time;
+            return chinese ? " · 更新 " + time : " · updated " + time;
         }
 
         private string Guidance(double remainingPercent)

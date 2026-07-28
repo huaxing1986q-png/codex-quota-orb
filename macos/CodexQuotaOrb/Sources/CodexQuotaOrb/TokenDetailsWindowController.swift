@@ -312,39 +312,42 @@ private final class TokenDetailsView: NSView {
         card.stroke()
 
         let context = snapshot.context
-        let usedPercent = context.usedPercent
-        let state = contextStateColor(usedPercent)
+        let available = context.available && context.inputTokens > 0
+        let sharePercent: Double? = available && snapshot.totalTokens > 0
+            ? min(100, max(0, Double(context.inputTokens) * 100 / Double(snapshot.totalTokens)))
+            : nil
+        let state = Palette.accent
         let heroWidth = max(260, rect.width * 0.34)
         drawText(
-            language == .chinese ? "当前会话上下文" : "CURRENT SESSION CONTEXT",
+            language == .chinese ? "累计上下文用量" : "CUMULATIVE CONTEXT USAGE",
             in: NSRect(x: rect.minX + 24, y: rect.minY + 17, width: heroWidth - 40, height: 24),
             font: Typography.system(16, weight: .semibold),
             color: Palette.text
         )
         drawText(
-            language == .chinese ? "点击查看容量与占用明细" : "CLICK FOR CAPACITY AND USAGE DETAILS",
+            language == .chinese ? "点击查看上下文与占用明细" : "CLICK FOR CONTEXT AND USAGE DETAILS",
             in: NSRect(x: rect.maxX - 276, y: rect.minY + 20, width: 252, height: 17),
             font: Typography.system(9.5, weight: .medium),
             color: hoveringContext ? Palette.accent : Palette.secondary,
             alignment: .right
         )
         drawText(
-            usedPercent.map { String(format: "%.0f%%", $0) } ?? "—",
-            in: NSRect(x: rect.minX + 22, y: rect.minY + 49, width: 92, height: 42),
+            available ? formatTokens(context.inputTokens, language: language) : "—",
+            in: NSRect(x: rect.minX + 22, y: rect.minY + 49, width: 148, height: 42),
             font: Typography.mono(32, weight: .semibold),
             color: state
         )
-        let ratio = context.available
-            ? formatTokens(context.inputTokens, language: language) + " / " + formatTokens(context.capacityTokens, language: language)
-            : (language == .chinese ? "等待当前会话数据" : "WAITING FOR CURRENT SESSION")
+        let ratio = sharePercent.map {
+            (language == .chinese ? "占本机总 Token " : "SHARE OF LOCAL TOKEN ") + String(format: "%.1f%%", $0)
+        } ?? (language == .chinese ? "等待累计上下文记录" : "WAITING FOR CUMULATIVE CONTEXT")
         drawText(
             ratio,
-            in: NSRect(x: rect.minX + 104, y: rect.minY + 65, width: heroWidth - 126, height: 18),
+            in: NSRect(x: rect.minX + 170, y: rect.minY + 65, width: heroWidth - 192, height: 18),
             font: Typography.mono(10.5, weight: .medium),
             color: Palette.secondary
         )
         drawText(
-            language == .chinese ? "上下文占用" : "CONTEXT USED",
+            language == .chinese ? "累计输入占比" : "CUMULATIVE INPUT SHARE",
             in: NSRect(x: rect.minX + 24, y: rect.minY + 104, width: 76, height: 16),
             font: Typography.system(9.5, weight: .medium),
             color: Palette.secondary
@@ -353,18 +356,28 @@ private final class TokenDetailsView: NSView {
         let track = NSRect(x: rect.minX + 104, y: rect.minY + 108, width: max(110, heroWidth - 128), height: 7)
         Palette.stroke.withAlpha(0.52).setFill()
         roundedPath(track, radius: 3.5).fill()
-        if let usedPercent {
+        if let sharePercent {
             let fill = NSRect(
                 x: track.minX,
                 y: track.minY,
-                width: max(4, min(track.width, track.width * usedPercent / 100)),
+                width: max(4, min(track.width, track.width * sharePercent / 100)),
                 height: track.height
             )
             state.setFill()
             roundedPath(fill, radius: 3.5).fill()
         }
+        let scope: String
+        if context.status == "partial" {
+            scope = language == .chinese
+                ? "累计统计 · 部分旧记录缺少输入明细"
+                : "CUMULATIVE · SOME OLD RECORDS LACK INPUT DETAILS"
+        } else {
+            scope = language == .chinese
+                ? "累计统计 · 不限当前对话"
+                : "CUMULATIVE · NOT LIMITED TO ACTIVE CONVERSATION"
+        }
         drawText(
-            contextGuidance(usedPercent),
+            scope,
             in: NSRect(x: rect.minX + 24, y: rect.minY + 127, width: heroWidth - 42, height: 17),
             font: Typography.system(9.5, weight: .medium),
             color: state
@@ -385,40 +398,45 @@ private final class TokenDetailsView: NSView {
             x: detailsX,
             y: cellY,
             width: cellWidth,
-            label: language == .chinese ? "上下文输入" : "CONTEXT INPUT",
-            value: context.available ? formatTokens(context.inputTokens, language: language) : "—"
+            label: language == .chinese ? "累计输入" : "CUMULATIVE INPUT",
+            value: available ? formatTokens(context.inputTokens, language: language) : "—"
         )
         drawContextValue(
             x: detailsX + cellWidth,
             y: cellY,
             width: cellWidth,
-            label: language == .chinese ? "剩余容量" : "REMAINING",
-            value: context.available ? formatTokens(context.remainingTokens, language: language) : "—"
+            label: language == .chinese ? "缓存复用" : "CACHED INPUT",
+            value: available && context.inputBreakdownAvailable
+                ? formatTokens(context.cachedInputTokens, language: language)
+                : "—"
         )
         drawContextValue(
             x: detailsX + cellWidth * 2,
             y: cellY,
             width: cellWidth,
-            label: language == .chinese ? "缓存复用" : "CACHED INPUT",
-            value: context.available && context.inputBreakdownAvailable
-                ? formatTokens(context.cachedInputTokens, language: language)
+            label: language == .chinese ? "新增输入" : "FRESH INPUT",
+            value: available && context.inputBreakdownAvailable
+                ? formatTokens(context.freshInputTokens, language: language)
                 : "—"
         )
         drawContextValue(
             x: detailsX + cellWidth * 3,
             y: cellY,
             width: max(80, detailsWidth - cellWidth * 3),
-            label: language == .chinese ? "新增输入" : "FRESH INPUT",
-            value: context.available && context.inputBreakdownAvailable
-                ? formatTokens(context.freshInputTokens, language: language)
-                : "—"
+            label: language == .chinese ? "对话数" : "CONVERSATIONS",
+            value: "\(context.conversationCount)"
         )
 
-        let footer = context.available
-            ? (language == .chinese ? "当前活动会话" : "CURRENT ACTIVE SESSION") + contextSampleSuffix(context)
+        let footer = available
+            ? (language == .chinese ? "覆盖全部本地历史 · " : "ALL LOCAL HISTORY · ")
+                + "\(context.projectCount)"
+                + (language == .chinese ? " 个项目 · " : " PROJECTS · ")
+                + "\(context.conversationCount)"
+                + (language == .chinese ? " 个对话" : " CONVERSATIONS")
+                + contextSampleSuffix(context)
             : (language == .chinese
-                ? "仅显示当前活动会话的最新数值记录"
-                : "USES THE NEWEST NUMERIC RECORD FROM THE CURRENT ACTIVE SESSION")
+                ? "汇总本机所有可读取的 Codex 对话"
+                : "AGGREGATES EVERY READABLE LOCAL CODEX CONVERSATION")
         drawText(
             footer,
             in: NSRect(x: detailsX, y: rect.maxY - 31, width: detailsWidth, height: 18),
@@ -452,7 +470,7 @@ private final class TokenDetailsView: NSView {
     private func contextSampleSuffix(_ context: ContextCapacitySnapshot) -> String {
         guard let sampledAt = context.sampledAt else { return "" }
         let time = DateFormatter.localizedString(from: sampledAt, dateStyle: .none, timeStyle: .medium)
-        return language == .chinese ? " · 上下文采样 \(time)" : " · CONTEXT SAMPLED \(time)"
+        return language == .chinese ? " · 更新 \(time)" : " · UPDATED \(time)"
     }
 
     private func contextGuidance(_ usedPercent: Double?) -> String {

@@ -30,6 +30,8 @@ namespace CodexMonitor
         public long OutputTokens;
         public long ReasoningOutputTokens;
         public long SessionTotalTokens;
+        public int ProjectCount;
+        public int ConversationCount;
 
         public long FreshInputTokens
         {
@@ -59,6 +61,10 @@ namespace CodexMonitor
         public DateTime StartedLocal;
         public DateTime UpdatedLocal;
         public long Tokens;
+        public long ContextInputTokens;
+        public long CachedInputTokens;
+        public long OutputTokens;
+        public long ReasoningOutputTokens;
     }
 
     public sealed class ProjectTokenUsage
@@ -66,6 +72,10 @@ namespace CodexMonitor
         public string ProjectPath;
         public string ProjectName;
         public long Tokens;
+        public long ContextInputTokens;
+        public long CachedInputTokens;
+        public long OutputTokens;
+        public long ReasoningOutputTokens;
         public int Conversations;
     }
 
@@ -99,13 +109,41 @@ namespace CodexMonitor
         public long Length { get; set; }
         public long LastWriteUtcTicks { get; set; }
         public long TotalTokens { get; set; }
+        public long ContextInputTokens { get; set; }
+        public long CachedInputTokens { get; set; }
+        public long OutputTokens { get; set; }
+        public long ReasoningOutputTokens { get; set; }
+        public bool HasContextBreakdown { get; set; }
         public string FirstDay { get; set; }
         public Dictionary<string, long> Days { get; set; }
     }
 
+    internal sealed class ParsedTokenLine
+    {
+        public DateTime TimestampUtc;
+        public long CumulativeTotal;
+        public long IncrementalTotal;
+        public long CumulativeInput;
+        public long IncrementalInput;
+        public long CumulativeCachedInput;
+        public long IncrementalCachedInput;
+        public long CumulativeOutput;
+        public long IncrementalOutput;
+        public long CumulativeReasoningOutput;
+        public long IncrementalReasoningOutput;
+        public bool HasCumulativeInput;
+        public bool HasIncrementalInput;
+        public bool HasCumulativeCachedInput;
+        public bool HasIncrementalCachedInput;
+        public bool HasCumulativeOutput;
+        public bool HasIncrementalOutput;
+        public bool HasCumulativeReasoningOutput;
+        public bool HasIncrementalReasoningOutput;
+    }
+
     public static class TokenHistoryReader
     {
-        private const int CacheVersion = 2;
+        private const int CacheVersion = 3;
         private const int MaxCacheBytes = 8 * 1024 * 1024;
         private const int StreamBufferBytes = 128 * 1024;
         private const int MaxContextTailBytes = 4 * 1024 * 1024;
@@ -132,18 +170,17 @@ namespace CodexMonitor
             output["context"] = new Dictionary<string, object> {
                 { "available", snapshot.Context.Available },
                 { "status", snapshot.Context.Status },
-                { "capacity_tokens", snapshot.Context.CapacityTokens },
+                { "scope", "cumulative_local_history" },
                 { "input_tokens", snapshot.Context.InputTokens },
                 { "cached_input_tokens", snapshot.Context.CachedInputTokens },
                 { "fresh_input_tokens", snapshot.Context.InputBreakdownAvailable ? (object)snapshot.Context.FreshInputTokens : null },
                 { "input_breakdown_available", snapshot.Context.InputBreakdownAvailable },
-                { "remaining_tokens", snapshot.Context.RemainingTokens },
-                { "used_percent", snapshot.Context.UsedPercent },
                 { "output_tokens", snapshot.Context.OutputTokens },
                 { "reasoning_output_tokens", snapshot.Context.ReasoningOutputTokens },
-                { "session_total_tokens", snapshot.Context.SessionTotalTokens },
-                { "session_id", snapshot.Context.SessionId },
-                { "selection_source", snapshot.Context.SelectionSource },
+                { "history_total_tokens", snapshot.TotalTokens },
+                { "share_of_history_percent", snapshot.TotalTokens <= 0 ? 0 : snapshot.Context.InputTokens * 100d / snapshot.TotalTokens },
+                { "projects", snapshot.Context.ProjectCount },
+                { "conversations", snapshot.Context.ConversationCount },
                 { "sample_utc", snapshot.Context.SampleUtc == DateTime.MinValue ? null : (object)snapshot.Context.SampleUtc.ToString("o") }
             };
             return Json.Serialize(output);
@@ -153,7 +190,7 @@ namespace CodexMonitor
         {
             TokenHistorySnapshot snapshot = new TokenHistorySnapshot();
             snapshot.SampleUtc = DateTime.UtcNow;
-            snapshot.Context = ReadCurrentContext(sessionsRoot);
+            snapshot.Context = new ContextCapacitySnapshot { SampleUtc = snapshot.SampleUtc };
             try
             {
                 List<FileInfo> files = EnumerateSessionFiles(sessionsRoot);
@@ -163,6 +200,8 @@ namespace CodexMonitor
                 Dictionary<string, ProjectTokenUsage> projectTotals = new Dictionary<string, ProjectTokenUsage>(StringComparer.OrdinalIgnoreCase);
                 DateTime since = DateTime.MaxValue;
                 int reused = 0;
+                bool hasCumulativeContext = false;
+                bool completeContextBreakdown = true;
 
                 for (int index = 0; index < files.Count; index++)
                 {
@@ -184,6 +223,10 @@ namespace CodexMonitor
                     nextEntries[key] = entry;
                     MergeDays(aggregate, entry.Days);
                     ConversationTokenUsage conversation = ReadConversation(file, entry.TotalTokens);
+                    conversation.ContextInputTokens = Math.Max(0, entry.ContextInputTokens);
+                    conversation.CachedInputTokens = Math.Max(0, Math.Min(conversation.ContextInputTokens, entry.CachedInputTokens));
+                    conversation.OutputTokens = Math.Max(0, entry.OutputTokens);
+                    conversation.ReasoningOutputTokens = Math.Max(0, Math.Min(conversation.OutputTokens, entry.ReasoningOutputTokens));
                     snapshot.Conversations.Add(conversation);
                     ProjectTokenUsage project;
                     string projectKey = String.IsNullOrWhiteSpace(conversation.ProjectPath) ? "(unknown)" : conversation.ProjectPath;
@@ -196,7 +239,17 @@ namespace CodexMonitor
                         projectTotals[projectKey] = project;
                     }
                     project.Tokens = SafeAdd(project.Tokens, conversation.Tokens);
+                    project.ContextInputTokens = SafeAdd(project.ContextInputTokens, conversation.ContextInputTokens);
+                    project.CachedInputTokens = SafeAdd(project.CachedInputTokens, conversation.CachedInputTokens);
+                    project.OutputTokens = SafeAdd(project.OutputTokens, conversation.OutputTokens);
+                    project.ReasoningOutputTokens = SafeAdd(project.ReasoningOutputTokens, conversation.ReasoningOutputTokens);
                     project.Conversations++;
+                    snapshot.Context.InputTokens = SafeAdd(snapshot.Context.InputTokens, conversation.ContextInputTokens);
+                    snapshot.Context.CachedInputTokens = SafeAdd(snapshot.Context.CachedInputTokens, conversation.CachedInputTokens);
+                    snapshot.Context.OutputTokens = SafeAdd(snapshot.Context.OutputTokens, conversation.OutputTokens);
+                    snapshot.Context.ReasoningOutputTokens = SafeAdd(snapshot.Context.ReasoningOutputTokens, conversation.ReasoningOutputTokens);
+                    if (entry.HasContextBreakdown) hasCumulativeContext = true;
+                    else if (entry.TotalTokens > 0) completeContextBreakdown = false;
                     DateTime first;
                     if (TryParseDay(entry.FirstDay, out first) && first < since) since = first;
                 }
@@ -230,14 +283,24 @@ namespace CodexMonitor
                 snapshot.SessionFiles = files.Count;
                 snapshot.ReusedFiles = reused;
                 snapshot.Projects.AddRange(projectTotals.Values);
+                snapshot.Context.CachedInputTokens = Math.Min(snapshot.Context.InputTokens, snapshot.Context.CachedInputTokens);
+                snapshot.Context.ReasoningOutputTokens = Math.Min(snapshot.Context.OutputTokens, snapshot.Context.ReasoningOutputTokens);
+                snapshot.Context.Available = hasCumulativeContext;
+                snapshot.Context.Status = hasCumulativeContext
+                    ? (completeContextBreakdown ? "ok" : "partial")
+                    : (files.Count == 0 ? "empty" : "unavailable");
+                snapshot.Context.InputBreakdownAvailable = hasCumulativeContext && completeContextBreakdown;
+                snapshot.Context.SessionTotalTokens = snapshot.TotalTokens;
                 snapshot.Projects.Sort(delegate(ProjectTokenUsage left, ProjectTokenUsage right) {
-                    int tokens = right.Tokens.CompareTo(left.Tokens);
+                    int tokens = right.ContextInputTokens.CompareTo(left.ContextInputTokens);
                     return tokens != 0 ? tokens : StringComparer.CurrentCultureIgnoreCase.Compare(left.ProjectName, right.ProjectName);
                 });
                 snapshot.Conversations.Sort(delegate(ConversationTokenUsage left, ConversationTokenUsage right) {
-                    int tokens = right.Tokens.CompareTo(left.Tokens);
+                    int tokens = right.ContextInputTokens.CompareTo(left.ContextInputTokens);
                     return tokens != 0 ? tokens : right.UpdatedLocal.CompareTo(left.UpdatedLocal);
                 });
+                snapshot.Context.ProjectCount = snapshot.Projects.Count;
+                snapshot.Context.ConversationCount = snapshot.Conversations.Count;
                 return snapshot;
             }
             catch
@@ -268,13 +331,13 @@ namespace CodexMonitor
                 Assert(failures, parsed.TotalTokens == 300, "history total token sum");
                 Assert(failures, parsed.Days.Count == 2, "history daily buckets");
                 Assert(failures, parsed.Days[0].Tokens == 250 && parsed.Days[1].Tokens == 50, "history incremental allocation");
-                Assert(failures, parsed.Context.Available, "context fixture available");
-                Assert(failures, parsed.Context.CapacityTokens == 200 && parsed.Context.InputTokens == 90, "context capacity and input");
-                Assert(failures, parsed.Context.CachedInputTokens == 70 && parsed.Context.FreshInputTokens == 20, "context input structure");
-                Assert(failures, parsed.Context.InputBreakdownAvailable, "normal context input breakdown available");
-                Assert(failures, parsed.Context.RemainingTokens == 110 && Math.Abs(parsed.Context.UsedPercent - 45) < 0.001, "context remaining and percent");
-                Assert(failures, parsed.Context.OutputTokens == 10 && parsed.Context.ReasoningOutputTokens == 4, "context output structure");
-                Assert(failures, parsed.Context.SessionTotalTokens == 300, "context session cumulative");
+                Assert(failures, parsed.Context.Available, "cumulative context fixture available");
+                Assert(failures, parsed.Context.CapacityTokens == 0 && parsed.Context.InputTokens == 260, "cumulative context input");
+                Assert(failures, parsed.Context.CachedInputTokens == 180 && parsed.Context.FreshInputTokens == 80, "cumulative context input structure");
+                Assert(failures, parsed.Context.InputBreakdownAvailable, "cumulative context input breakdown available");
+                Assert(failures, parsed.Context.OutputTokens == 40 && parsed.Context.ReasoningOutputTokens == 12, "cumulative context output structure");
+                Assert(failures, parsed.Context.SessionTotalTokens == 300, "cumulative context history total");
+                Assert(failures, parsed.Context.ProjectCount == 1 && parsed.Context.ConversationCount == 1, "cumulative context coverage counts");
                 string compactedLine = "{\"timestamp\":\"2026-07-21T04:00:00Z\",\"type\":\"event_msg\",\"payload\":{\"type\":\"token_count\",\"info\":{\"total_token_usage\":{\"total_tokens\":191751509},\"last_token_usage\":{\"input_tokens\":0,\"cached_input_tokens\":0,\"output_tokens\":0,\"reasoning_output_tokens\":0,\"total_tokens\":45442},\"model_context_window\":258400}}}";
                 ContextCapacitySnapshot compacted;
                 Assert(failures, TryParseContextLine(compactedLine, out compacted), "compacted context fixture parses");
@@ -296,8 +359,8 @@ namespace CodexMonitor
                     TryParseActiveConversationLine("2026-07-21T04:00:00Z info thread_stream_view_activity_changed active=true conversationId=01234567-89ab-cdef-0123-456789abcdef rendererWindowAppearance=primary rendererWindowVisible=true", out parsedConversationId)
                         && parsedConversationId == "01234567-89ab-cdef-0123-456789abcdef",
                     "active Codex log line exposes foreground conversation");
-                Assert(failures, parsed.Projects.Count == 1 && parsed.Projects[0].Tokens == 300 && parsed.Projects[0].Conversations == 1, "project aggregation");
-                Assert(failures, parsed.Conversations.Count == 1 && parsed.Conversations[0].SessionId.StartsWith("01234567"), "conversation aggregation");
+                Assert(failures, parsed.Projects.Count == 1 && parsed.Projects[0].Tokens == 300 && parsed.Projects[0].ContextInputTokens == 260 && parsed.Projects[0].Conversations == 1, "project aggregation");
+                Assert(failures, parsed.Conversations.Count == 1 && parsed.Conversations[0].ContextInputTokens == 260 && parsed.Conversations[0].SessionId.StartsWith("01234567"), "conversation aggregation");
                 TokenHistorySnapshot reused = ReadLatest(root, cache, null);
                 Assert(failures, reused.ReusedFiles == 0, "changed history files are rescanned");
                 TokenHistorySnapshot reusedAgain = ReadLatest(root, cache, null);
@@ -658,6 +721,10 @@ namespace CodexMonitor
             entry.LastWriteUtcTicks = file.LastWriteTimeUtc.Ticks;
             entry.Days = new Dictionary<string, long>(StringComparer.Ordinal);
             long previousTotal = 0;
+            long previousInput = 0;
+            long previousCachedInput = 0;
+            long previousOutput = 0;
+            long previousReasoningOutput = 0;
             string lastDay = null;
 
             using (FileStream stream = new FileStream(file.FullName, FileMode.Open, FileAccess.Read, FileShare.ReadWrite | FileShare.Delete, StreamBufferBytes, FileOptions.SequentialScan))
@@ -667,27 +734,49 @@ namespace CodexMonitor
                 while ((line = reader.ReadLine()) != null)
                 {
                     if (line.IndexOf("\"token_count\"", StringComparison.Ordinal) < 0) continue;
-                    DateTime timestampUtc;
-                    long cumulative;
-                    long incremental;
-                    if (!TryParseTokenLine(line, out timestampUtc, out cumulative, out incremental)) continue;
+                    ParsedTokenLine parsed;
+                    if (!TryParseTokenLine(line, out parsed)) continue;
                     long delta;
-                    if (cumulative > 0)
+                    if (parsed.CumulativeTotal > 0)
                     {
-                        delta = cumulative >= previousTotal ? cumulative - previousTotal : cumulative;
-                        previousTotal = cumulative;
+                        delta = parsed.CumulativeTotal >= previousTotal
+                            ? parsed.CumulativeTotal - previousTotal
+                            : parsed.CumulativeTotal;
+                        previousTotal = parsed.CumulativeTotal;
                     }
                     else
                     {
-                        delta = incremental;
+                        delta = parsed.IncrementalTotal;
                         previousTotal = SafeAdd(previousTotal, delta);
                     }
                     if (delta <= 0) continue;
-                    string day = timestampUtc.ToLocalTime().ToString("yyyy-MM-dd", CultureInfo.InvariantCulture);
+                    string day = parsed.TimestampUtc.ToLocalTime().ToString("yyyy-MM-dd", CultureInfo.InvariantCulture);
                     long existing;
                     entry.Days.TryGetValue(day, out existing);
                     entry.Days[day] = SafeAdd(existing, delta);
                     entry.TotalTokens = SafeAdd(entry.TotalTokens, delta);
+                    long inputDelta = ComponentDelta(
+                        parsed.CumulativeInput, parsed.HasCumulativeInput,
+                        parsed.IncrementalInput, parsed.HasIncrementalInput,
+                        ref previousInput);
+                    long cachedDelta = ComponentDelta(
+                        parsed.CumulativeCachedInput, parsed.HasCumulativeCachedInput,
+                        parsed.IncrementalCachedInput, parsed.HasIncrementalCachedInput,
+                        ref previousCachedInput);
+                    long outputDelta = ComponentDelta(
+                        parsed.CumulativeOutput, parsed.HasCumulativeOutput,
+                        parsed.IncrementalOutput, parsed.HasIncrementalOutput,
+                        ref previousOutput);
+                    long reasoningDelta = ComponentDelta(
+                        parsed.CumulativeReasoningOutput, parsed.HasCumulativeReasoningOutput,
+                        parsed.IncrementalReasoningOutput, parsed.HasIncrementalReasoningOutput,
+                        ref previousReasoningOutput);
+                    entry.ContextInputTokens = SafeAdd(entry.ContextInputTokens, inputDelta);
+                    entry.CachedInputTokens = SafeAdd(entry.CachedInputTokens, cachedDelta);
+                    entry.OutputTokens = SafeAdd(entry.OutputTokens, outputDelta);
+                    entry.ReasoningOutputTokens = SafeAdd(entry.ReasoningOutputTokens, reasoningDelta);
+                    if (parsed.HasCumulativeInput || parsed.HasIncrementalInput)
+                        entry.HasContextBreakdown = true;
                     lastDay = day;
                     if (String.IsNullOrEmpty(entry.FirstDay) || StringComparer.Ordinal.Compare(day, entry.FirstDay) < 0)
                         entry.FirstDay = day;
@@ -699,14 +788,31 @@ namespace CodexMonitor
                 entry.TotalTokens = previousTotal;
                 entry.Days[lastDay] = previousTotal;
             }
+            entry.CachedInputTokens = Math.Min(entry.ContextInputTokens, entry.CachedInputTokens);
+            entry.ReasoningOutputTokens = Math.Min(entry.OutputTokens, entry.ReasoningOutputTokens);
             return entry;
         }
 
-        private static bool TryParseTokenLine(string line, out DateTime timestampUtc, out long cumulative, out long incremental)
+        private static long ComponentDelta(long cumulative, bool hasCumulative, long incremental, bool hasIncremental, ref long previous)
         {
-            timestampUtc = DateTime.MinValue;
-            cumulative = 0;
-            incremental = 0;
+            long delta = 0;
+            if (hasCumulative)
+            {
+                long value = Math.Max(0, cumulative);
+                delta = value >= previous ? value - previous : value;
+                previous = value;
+            }
+            else if (hasIncremental)
+            {
+                delta = Math.Max(0, incremental);
+                previous = SafeAdd(previous, delta);
+            }
+            return Math.Max(0, delta);
+        }
+
+        private static bool TryParseTokenLine(string line, out ParsedTokenLine parsed)
+        {
+            parsed = null;
             try
             {
                 Dictionary<string, object> root = Json.DeserializeObject(line) as Dictionary<string, object>;
@@ -717,14 +823,39 @@ namespace CodexMonitor
                 if (info == null) return false;
                 Dictionary<string, object> total = Value(info, "total_token_usage") as Dictionary<string, object>;
                 Dictionary<string, object> last = Value(info, "last_token_usage") as Dictionary<string, object>;
-                cumulative = LongValue(total, "total_tokens");
-                incremental = LongValue(last, "total_tokens");
                 string timestamp = Convert.ToString(Value(root, "timestamp"), CultureInfo.InvariantCulture);
+                DateTime timestampUtc;
                 if (!DateTime.TryParse(timestamp, CultureInfo.InvariantCulture, DateTimeStyles.AssumeUniversal | DateTimeStyles.AdjustToUniversal, out timestampUtc))
                     return false;
-                return cumulative > 0 || incremental > 0;
+                parsed = new ParsedTokenLine {
+                    TimestampUtc = timestampUtc,
+                    CumulativeTotal = LongValue(total, "total_tokens"),
+                    IncrementalTotal = LongValue(last, "total_tokens"),
+                    CumulativeInput = LongValue(total, "input_tokens"),
+                    IncrementalInput = LongValue(last, "input_tokens"),
+                    CumulativeCachedInput = LongValue(total, "cached_input_tokens"),
+                    IncrementalCachedInput = LongValue(last, "cached_input_tokens"),
+                    CumulativeOutput = LongValue(total, "output_tokens"),
+                    IncrementalOutput = LongValue(last, "output_tokens"),
+                    CumulativeReasoningOutput = LongValue(total, "reasoning_output_tokens"),
+                    IncrementalReasoningOutput = LongValue(last, "reasoning_output_tokens"),
+                    HasCumulativeInput = HasKey(total, "input_tokens"),
+                    HasIncrementalInput = HasKey(last, "input_tokens"),
+                    HasCumulativeCachedInput = HasKey(total, "cached_input_tokens"),
+                    HasIncrementalCachedInput = HasKey(last, "cached_input_tokens"),
+                    HasCumulativeOutput = HasKey(total, "output_tokens"),
+                    HasIncrementalOutput = HasKey(last, "output_tokens"),
+                    HasCumulativeReasoningOutput = HasKey(total, "reasoning_output_tokens"),
+                    HasIncrementalReasoningOutput = HasKey(last, "reasoning_output_tokens")
+                };
+                return parsed.CumulativeTotal > 0 || parsed.IncrementalTotal > 0;
             }
             catch { return false; }
+        }
+
+        private static bool HasKey(Dictionary<string, object> source, string key)
+        {
+            return source != null && source.ContainsKey(key);
         }
 
         private static HistoryCacheDocument ReadCache(string path)

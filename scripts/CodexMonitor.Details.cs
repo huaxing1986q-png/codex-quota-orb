@@ -319,7 +319,7 @@ namespace CodexMonitor
             {
                 g.DrawString(chinese ? "Token 使用详情" : "Token usage details", titleFont, ink, 40, 34);
                 g.DrawString(
-                    chinese ? "上方与下方为本机 Token 历史；中间为当前活动会话上下文" : "Top and bottom show local Token history; the middle shows the active session context",
+                    chinese ? "上方与下方为本机 Token 历史；中间为全部对话累计上下文" : "Top and bottom show local Token history; the middle shows cumulative context across all conversations",
                     subtitleFont, secondary, 40, 75);
             }
 
@@ -412,9 +412,12 @@ namespace CodexMonitor
                 g.DrawPath(edge, edgePath);
 
             ContextCapacitySnapshot context = snapshot == null ? null : snapshot.Context;
-            bool available = context != null && context.Available && context.CapacityTokens > 0;
-            double usedPercent = available ? context.UsedPercent : -1;
-            Color state = ContextStateColor(usedPercent);
+            bool available = context != null && context.Available && context.InputTokens > 0;
+            long historyTotal = snapshot == null ? 0 : Math.Max(0, snapshot.TotalTokens);
+            double sharePercent = available && historyTotal > 0
+                ? Math.Max(0, Math.Min(100, context.InputTokens * 100d / historyTotal))
+                : -1;
+            Color state = Color.FromArgb(57, 122, 224);
             int heroWidth = Math.Max(260, (int)Math.Round(panel.Width * 0.34));
 
             using (SolidBrush ink = new SolidBrush(Color.FromArgb(23, 29, 37)))
@@ -422,17 +425,17 @@ namespace CodexMonitor
             using (SolidBrush stateBrush = new SolidBrush(state))
             using (Pen divider = new Pen(Color.FromArgb(35, 86, 105, 122), 1f))
             {
-                g.DrawString(chinese ? "当前会话上下文" : "Current session context", sectionFont, ink, panel.X + 24, panel.Y + 17);
-                string action = chinese ? "点击查看容量与占用明细" : "Click for capacity and usage details";
+                g.DrawString(chinese ? "累计上下文用量" : "Cumulative context usage", sectionFont, ink, panel.X + 24, panel.Y + 17);
+                string action = chinese ? "点击查看上下文与占用明细" : "Click for context and usage details";
                 SizeF actionSize = g.MeasureString(action, metaFont);
                 g.DrawString(action, metaFont, secondary, panel.Right - 24 - actionSize.Width, panel.Y + 20);
-                string percent = available ? usedPercent.ToString("0", CultureInfo.CurrentCulture) + "%" : "—";
-                g.DrawString(percent, heroMetricFont, stateBrush, panel.X + 22, panel.Y + 50);
+                string totalContext = available ? FormatTokens(context.InputTokens, chinese) : "—";
+                g.DrawString(totalContext, heroMetricFont, stateBrush, panel.X + 22, panel.Y + 50);
                 string ratio = available
-                    ? FormatTokens(context.InputTokens, chinese) + " / " + FormatTokens(context.CapacityTokens, chinese)
-                    : (chinese ? "等待当前会话数据" : "Waiting for current session data");
-                g.DrawString(ratio, metaFont, secondary, panel.X + 105, panel.Y + 69);
-                g.DrawString(chinese ? "上下文占用" : "Context used", metaFont, secondary, panel.X + 24, panel.Y + 104);
+                    ? (chinese ? "占本机总 Token " : "Share of local Token ") + sharePercent.ToString("0.0", CultureInfo.CurrentCulture) + "%"
+                    : (chinese ? "等待累计上下文记录" : "Waiting for cumulative context history");
+                g.DrawString(ratio, metaFont, secondary, panel.X + 170, panel.Y + 69);
+                g.DrawString(chinese ? "累计输入占比" : "Cumulative input share", metaFont, secondary, panel.X + 24, panel.Y + 104);
 
                 Rectangle track = new Rectangle(panel.X + 105, panel.Y + 107, Math.Max(110, heroWidth - 129), 7);
                 using (GraphicsPath trackPath = RoundedRect(track, 4))
@@ -440,12 +443,15 @@ namespace CodexMonitor
                     g.FillPath(trackFill, trackPath);
                 if (available)
                 {
-                    int fillWidth = Math.Max(4, (int)Math.Round(track.Width * usedPercent / 100d));
+                    int fillWidth = Math.Max(4, (int)Math.Round(track.Width * sharePercent / 100d));
                     using (GraphicsPath fillPath = RoundedRect(new Rectangle(track.X, track.Y, Math.Min(track.Width, fillWidth), track.Height), 4))
                     using (SolidBrush progress = new SolidBrush(state))
                         g.FillPath(progress, fillPath);
                 }
-                g.DrawString(ContextGuidance(usedPercent, chinese), metaFont, stateBrush, panel.X + 24, panel.Y + 127);
+                string scope = context != null && context.Status == "partial"
+                    ? (chinese ? "累计统计 · 部分旧记录缺少输入明细" : "Cumulative · some old records lack input details")
+                    : (chinese ? "累计统计 · 不限当前对话" : "Cumulative · not limited to the active conversation");
+                g.DrawString(scope, metaFont, stateBrush, panel.X + 24, panel.Y + 127);
 
                 int detailsX = panel.X + heroWidth + 18;
                 int detailsWidth = panel.Right - 24 - detailsX;
@@ -453,21 +459,26 @@ namespace CodexMonitor
                 int cellWidth = Math.Max(90, detailsWidth / 4);
                 int cellY = panel.Y + 52;
                 DrawContextValue(g, detailsX, cellY, cellWidth,
-                    chinese ? "上下文输入" : "Context input",
+                    chinese ? "累计输入" : "Cumulative input",
                     available ? FormatTokens(context.InputTokens, chinese) : "—");
                 DrawContextValue(g, detailsX + cellWidth, cellY, cellWidth,
-                    chinese ? "剩余容量" : "Remaining",
-                    available ? FormatTokens(context.RemainingTokens, chinese) : "—");
-                DrawContextValue(g, detailsX + cellWidth * 2, cellY, cellWidth,
                     chinese ? "缓存复用" : "Cached input",
                     available && context.InputBreakdownAvailable ? FormatTokens(context.CachedInputTokens, chinese) : "—");
-                DrawContextValue(g, detailsX + cellWidth * 3, cellY, Math.Max(80, detailsWidth - cellWidth * 3),
+                DrawContextValue(g, detailsX + cellWidth * 2, cellY, cellWidth,
                     chinese ? "新增输入" : "Fresh input",
                     available && context.InputBreakdownAvailable ? FormatTokens(context.FreshInputTokens, chinese) : "—");
+                DrawContextValue(g, detailsX + cellWidth * 3, cellY, Math.Max(80, detailsWidth - cellWidth * 3),
+                    chinese ? "对话数" : "Conversations",
+                    context == null ? "—" : context.ConversationCount.ToString(CultureInfo.CurrentCulture));
 
                 string footer = available
-                    ? (chinese ? "当前活动会话" : "Current active session") + ContextSampleSuffix(context, chinese)
-                    : (chinese ? "仅显示当前活动会话的最新数值记录" : "Uses the newest numeric record from the current active session");
+                    ? (chinese ? "覆盖全部本地历史 · " : "All local history · ")
+                        + context.ProjectCount.ToString(CultureInfo.CurrentCulture)
+                        + (chinese ? " 个项目 · " : " projects · ")
+                        + context.ConversationCount.ToString(CultureInfo.CurrentCulture)
+                        + (chinese ? " 个对话" : " conversations")
+                        + ContextSampleSuffix(context, chinese)
+                    : (chinese ? "汇总本机所有可读取的 Codex 对话" : "Aggregates every readable local Codex conversation");
                 g.DrawString(footer, metaFont, secondary, detailsX, panel.Bottom - 30);
             }
         }
@@ -476,7 +487,7 @@ namespace CodexMonitor
         {
             if (context == null || context.SampleUtc == DateTime.MinValue) return String.Empty;
             string time = context.SampleUtc.ToLocalTime().ToString("HH:mm:ss", CultureInfo.CurrentCulture);
-            return chinese ? " · 上下文采样 " + time : " · context sampled " + time;
+            return chinese ? " · 更新 " + time : " · updated " + time;
         }
 
         private void DrawContextValue(Graphics g, int x, int y, int width, string label, string value)
