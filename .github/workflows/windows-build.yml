@@ -2,7 +2,7 @@ name: Windows build
 
 on:
   push:
-    branches: ["main", "agent/windows-release"]
+    branches: ["main", "agent/windows-release", "agent/context-capacity"]
     paths:
       - "scripts/**"
       - "windows/**"

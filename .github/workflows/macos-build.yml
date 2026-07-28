@@ -2,7 +2,7 @@ name: macOS build
 
 on:
   push:
-    branches: ["main", "macos-native"]
+    branches: ["main", "macos-native", "agent/context-capacity"]
     paths:
       - "macos/**"
       - ".github/workflows/macos-build.yml"

@@ -25,8 +25,8 @@ namespace CodexMonitor
 
     internal sealed class TokenDetailsForm : Form
     {
-        private static readonly Size LogicalDefaultSize = new Size(1120, 620);
-        private static readonly Size LogicalMinimumSize = new Size(900, 560);
+        private static readonly Size LogicalDefaultSize = new Size(1120, 780);
+        private static readonly Size LogicalMinimumSize = new Size(900, 690);
         private readonly string sessionsRoot;
         private readonly string cachePath;
         private readonly Timer refreshTimer;
@@ -38,9 +38,12 @@ namespace CodexMonitor
         private readonly List<HeatCellHit> heatCells = new List<HeatCellHit>();
         private Task<TokenHistorySnapshot> refreshTask;
         private TokenHistorySnapshot snapshot;
+        private ContextBreakdownForm contextBreakdownForm;
+        private Rectangle contextPanelBounds;
         private TokenDetailView activeView = TokenDetailView.Daily;
         private DateTime lastRefreshStarted = DateTime.MinValue;
         private bool refreshRequested = true;
+        private bool closing;
         private bool chinese;
         private int progressCurrent;
         private int progressTotal;
@@ -125,7 +128,7 @@ namespace CodexMonitor
             Rectangle work = screen == null ? Screen.PrimaryScreen.WorkingArea : screen.WorkingArea;
             Size size = ScaleSize(LogicalDefaultSize);
             int width = Math.Min(size.Width, Math.Max(Scale(780), work.Width - Scale(48)));
-            int height = Math.Min(size.Height, Math.Max(Scale(520), work.Height - Scale(48)));
+            int height = Math.Min(size.Height, Math.Max(Scale(650), work.Height - Scale(48)));
             Bounds = new Rectangle(
                 work.Left + Math.Max(Scale(24), (work.Width - width) / 2),
                 work.Top + Math.Max(Scale(18), (work.Height - height) / 2 - Scale(12)),
@@ -137,6 +140,8 @@ namespace CodexMonitor
         {
             chinese = chineseValue;
             UpdateLanguage();
+            if (contextBreakdownForm != null && !contextBreakdownForm.IsDisposed)
+                contextBreakdownForm.SetLanguage(chineseValue);
             Invalidate();
         }
 
@@ -182,6 +187,8 @@ namespace CodexMonitor
                 progressCurrent = 0;
                 progressTotal = 0;
                 retryButton.Visible = snapshot == null || snapshot.Status == "unavailable";
+                if (contextBreakdownForm != null && !contextBreakdownForm.IsDisposed)
+                    contextBreakdownForm.UpdateHistory(snapshot);
                 Invalidate();
             }
 
@@ -267,10 +274,10 @@ namespace CodexMonitor
             int gap = 6;
             int total = tabWidth * 3 + gap * 2;
             int start = Math.Max(460, logicalWidth - 40 - total);
-            SetControlBounds(dailyButton, new Rectangle(start, 288, tabWidth, 36));
-            SetControlBounds(weeklyButton, new Rectangle(start + tabWidth + gap, 288, tabWidth, 36));
-            SetControlBounds(cumulativeButton, new Rectangle(start + (tabWidth + gap) * 2, 288, tabWidth, 36));
-            SetControlBounds(retryButton, new Rectangle(Math.Max(40, (logicalWidth - 112) / 2), 458, 112, 40));
+            SetControlBounds(dailyButton, new Rectangle(start, 456, tabWidth, 36));
+            SetControlBounds(weeklyButton, new Rectangle(start + tabWidth + gap, 456, tabWidth, 36));
+            SetControlBounds(cumulativeButton, new Rectangle(start + (tabWidth + gap) * 2, 456, tabWidth, 36));
+            SetControlBounds(retryButton, new Rectangle(Math.Max(40, (logicalWidth - 112) / 2), 625, 112, 40));
             retryButton.Visible = snapshot != null && snapshot.Status == "unavailable";
         }
 
@@ -312,11 +319,12 @@ namespace CodexMonitor
             {
                 g.DrawString(chinese ? "Token 使用详情" : "Token usage details", titleFont, ink, 40, 34);
                 g.DrawString(
-                    chinese ? "统计本机保留的 Codex 会话记录，仅处理数值型 token_count 数据" : "Local Codex session history; only numeric token_count records are processed",
+                    chinese ? "当前上下文与本机 Token 历史分开统计，仅处理数值型 token_count 数据" : "Current context and local Token history are separate; only numeric token_count records are processed",
                     subtitleFont, secondary, 40, 75);
             }
 
             DrawMetricRow(g, width);
+            DrawContextPanel(g, width);
             DrawActivityPanel(g, width, height);
         }
 
@@ -391,9 +399,113 @@ namespace CodexMonitor
             g.DrawString(unit, unitFont, brush, x + numberWidth + 2, y + 14);
         }
 
+        private void DrawContextPanel(Graphics g, int width)
+        {
+            Rectangle panel = new Rectangle(40, 260, Math.Max(720, width - 80), 154);
+            contextPanelBounds = panel;
+            using (GraphicsPath path = RoundedRect(panel, 20))
+            using (LinearGradientBrush fill = new LinearGradientBrush(
+                panel, Color.FromArgb(239, 248, 253), Color.FromArgb(247, 250, 246), 8f))
+                g.FillPath(fill, path);
+            using (GraphicsPath edgePath = RoundedRect(new Rectangle(panel.X, panel.Y, panel.Width - 1, panel.Height - 1), 20))
+            using (Pen edge = new Pen(Color.FromArgb(58, 93, 127, 152), 1f))
+                g.DrawPath(edge, edgePath);
+
+            ContextCapacitySnapshot context = snapshot == null ? null : snapshot.Context;
+            bool available = context != null && context.Available && context.CapacityTokens > 0;
+            double usedPercent = available ? context.UsedPercent : -1;
+            Color state = ContextStateColor(usedPercent);
+            int heroWidth = Math.Max(260, (int)Math.Round(panel.Width * 0.34));
+
+            using (SolidBrush ink = new SolidBrush(Color.FromArgb(23, 29, 37)))
+            using (SolidBrush secondary = new SolidBrush(Color.FromArgb(75, 87, 101)))
+            using (SolidBrush stateBrush = new SolidBrush(state))
+            using (Pen divider = new Pen(Color.FromArgb(35, 86, 105, 122), 1f))
+            {
+                g.DrawString(chinese ? "当前会话上下文" : "Current session context", sectionFont, ink, panel.X + 24, panel.Y + 17);
+                string action = chinese ? "点击查看容量分布" : "Click for capacity breakdown";
+                SizeF actionSize = g.MeasureString(action, metaFont);
+                g.DrawString(action, metaFont, secondary, panel.Right - 24 - actionSize.Width, panel.Y + 20);
+                string percent = available ? usedPercent.ToString("0", CultureInfo.CurrentCulture) + "%" : "—";
+                g.DrawString(percent, heroMetricFont, stateBrush, panel.X + 22, panel.Y + 50);
+                string ratio = available
+                    ? FormatTokens(context.InputTokens, chinese) + " / " + FormatTokens(context.CapacityTokens, chinese)
+                    : (chinese ? "等待当前会话数据" : "Waiting for current session data");
+                g.DrawString(ratio, metaFont, secondary, panel.X + 105, panel.Y + 69);
+                g.DrawString(chinese ? "上下文占用" : "Context used", metaFont, secondary, panel.X + 24, panel.Y + 104);
+
+                Rectangle track = new Rectangle(panel.X + 105, panel.Y + 107, Math.Max(110, heroWidth - 129), 7);
+                using (GraphicsPath trackPath = RoundedRect(track, 4))
+                using (SolidBrush trackFill = new SolidBrush(Color.FromArgb(220, 229, 235)))
+                    g.FillPath(trackFill, trackPath);
+                if (available)
+                {
+                    int fillWidth = Math.Max(4, (int)Math.Round(track.Width * usedPercent / 100d));
+                    using (GraphicsPath fillPath = RoundedRect(new Rectangle(track.X, track.Y, Math.Min(track.Width, fillWidth), track.Height), 4))
+                    using (SolidBrush progress = new SolidBrush(state))
+                        g.FillPath(progress, fillPath);
+                }
+                g.DrawString(ContextGuidance(usedPercent, chinese), metaFont, stateBrush, panel.X + 24, panel.Y + 127);
+
+                int detailsX = panel.X + heroWidth + 18;
+                int detailsWidth = panel.Right - 24 - detailsX;
+                g.DrawLine(divider, detailsX - 12, panel.Y + 24, detailsX - 12, panel.Bottom - 23);
+                int cellWidth = Math.Max(90, detailsWidth / 4);
+                DrawContextValue(g, detailsX, panel.Y + 38, cellWidth,
+                    chinese ? "上下文输入" : "Context input",
+                    available ? FormatTokens(context.InputTokens, chinese) : "—");
+                DrawContextValue(g, detailsX + cellWidth, panel.Y + 38, cellWidth,
+                    chinese ? "剩余容量" : "Remaining",
+                    available ? FormatTokens(context.RemainingTokens, chinese) : "—");
+                DrawContextValue(g, detailsX + cellWidth * 2, panel.Y + 38, cellWidth,
+                    chinese ? "缓存复用" : "Cached input",
+                    available ? FormatTokens(context.CachedInputTokens, chinese) : "—");
+                DrawContextValue(g, detailsX + cellWidth * 3, panel.Y + 38, Math.Max(80, detailsWidth - cellWidth * 3),
+                    chinese ? "新增输入" : "Fresh input",
+                    available ? FormatTokens(context.FreshInputTokens, chinese) : "—");
+
+                string footer = available
+                    ? (chinese
+                        ? "上轮输出 " + FormatTokens(context.OutputTokens, true)
+                            + " · 推理 " + FormatTokens(context.ReasoningOutputTokens, true)
+                            + "（输出子集） · 会话累计 " + FormatTokens(context.SessionTotalTokens, true)
+                        : "Last output " + FormatTokens(context.OutputTokens, false)
+                            + " · reasoning " + FormatTokens(context.ReasoningOutputTokens, false)
+                            + " (output subset) · session cumulative " + FormatTokens(context.SessionTotalTokens, false))
+                    : (chinese ? "仅显示当前活动会话的最新数值记录" : "Uses the newest numeric record from the current active session");
+                g.DrawString(footer, metaFont, secondary, detailsX, panel.Bottom - 30);
+            }
+        }
+
+        private void DrawContextValue(Graphics g, int x, int y, int width, string label, string value)
+        {
+            using (SolidBrush labelBrush = new SolidBrush(Color.FromArgb(82, 94, 107)))
+            using (SolidBrush valueBrush = new SolidBrush(Color.FromArgb(20, 26, 33)))
+            {
+                g.DrawString(label, metaFont, labelBrush, new RectangleF(x, y, width - 8, 18));
+                g.DrawString(value, metricLabelFont, valueBrush, new RectangleF(x, y + 25, width - 8, 24));
+            }
+        }
+
+        private static Color ContextStateColor(double usedPercent)
+        {
+            if (usedPercent < 0) return Color.FromArgb(154, 164, 174);
+            if (usedPercent <= 50) return Color.FromArgb(51, 200, 120);
+            if (usedPercent <= 90) return Color.FromArgb(214, 155, 45);
+            return Color.FromArgb(233, 93, 79);
+        }
+
+        private static string ContextGuidance(double usedPercent, bool chinese)
+        {
+            if (usedPercent < 0) return chinese ? "状态不可用" : "Status unavailable";
+            if (usedPercent <= 50) return chinese ? "健康 · 暂无需整理" : "Healthy · no cleanup needed";
+            if (usedPercent <= 90) return chinese ? "谨慎 · 建议整理无关上下文" : "Caution · trim unrelated context";
+            return chinese ? "紧急 · 建议总结后新建任务" : "Critical · summarize and start a new task";
+        }
+
         private void DrawActivityPanel(Graphics g, int width, int height)
         {
-            Rectangle panel = new Rectangle(40, 270, Math.Max(720, width - 80), Math.Max(250, height - 310));
+            Rectangle panel = new Rectangle(40, 438, Math.Max(720, width - 80), Math.Max(220, height - 478));
             using (GraphicsPath path = RoundedRect(panel, 20))
             using (SolidBrush fill = new SolidBrush(Color.FromArgb(248, 251, 252)))
                 g.FillPath(fill, path);
@@ -617,8 +729,19 @@ namespace CodexMonitor
         protected override void OnMouseMove(MouseEventArgs e)
         {
             base.OnMouseMove(e);
-            if (activeView != TokenDetailView.Daily || heatCells.Count == 0) return;
             PointF logical = new PointF(e.X / uiScale, e.Y / uiScale);
+            if (contextPanelBounds.Contains(Point.Round(logical)))
+            {
+                Cursor = Cursors.Hand;
+                toolTip.SetToolTip(this, chinese ? "查看上下文容量分布" : "View context capacity breakdown");
+                return;
+            }
+            Cursor = Cursors.Default;
+            if (activeView != TokenDetailView.Daily || heatCells.Count == 0)
+            {
+                toolTip.SetToolTip(this, null);
+                return;
+            }
             foreach (HeatCellHit cell in heatCells)
             {
                 if (!cell.Bounds.Contains(logical)) continue;
@@ -628,6 +751,36 @@ namespace CodexMonitor
                 return;
             }
             toolTip.SetToolTip(this, null);
+        }
+
+        protected override void OnMouseUp(MouseEventArgs e)
+        {
+            base.OnMouseUp(e);
+            if (e.Button != MouseButtons.Left) return;
+            Point logical = new Point((int)Math.Round(e.X / uiScale), (int)Math.Round(e.Y / uiScale));
+            if (contextPanelBounds.Contains(logical)) OpenContextBreakdown();
+        }
+
+        private void OpenContextBreakdown()
+        {
+            if (contextBreakdownForm != null && !contextBreakdownForm.IsDisposed)
+            {
+                contextBreakdownForm.UpdateHistory(snapshot);
+                contextBreakdownForm.SetLanguage(chinese);
+                contextBreakdownForm.Reveal();
+                return;
+            }
+            contextBreakdownForm = new ContextBreakdownForm(snapshot, chinese, uiScale);
+            contextBreakdownForm.FormClosed += delegate
+            {
+                contextBreakdownForm = null;
+                if (!closing && !IsDisposed)
+                {
+                    Reveal();
+                    Focus();
+                }
+            };
+            contextBreakdownForm.ShowFor(this);
         }
 
         protected override void OnKeyDown(KeyEventArgs e)
@@ -717,7 +870,10 @@ namespace CodexMonitor
 
         protected override void OnFormClosed(FormClosedEventArgs e)
         {
+            closing = true;
             refreshTimer.Stop();
+            if (contextBreakdownForm != null && !contextBreakdownForm.IsDisposed)
+                contextBreakdownForm.Close();
             base.OnFormClosed(e);
         }
 

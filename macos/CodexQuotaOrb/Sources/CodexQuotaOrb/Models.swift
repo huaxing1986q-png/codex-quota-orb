@@ -51,6 +51,47 @@ struct DailyTokenUsage: Codable, Hashable {
     let tokens: Int64
 }
 
+struct ContextCapacitySnapshot {
+    var available = false
+    var status = "unavailable"
+    var sampledAt: Date?
+    var capacityTokens: Int64 = 0
+    var inputTokens: Int64 = 0
+    var cachedInputTokens: Int64 = 0
+    var outputTokens: Int64 = 0
+    var reasoningOutputTokens: Int64 = 0
+    var sessionTotalTokens: Int64 = 0
+
+    var freshInputTokens: Int64 {
+        max(0, inputTokens - cachedInputTokens)
+    }
+
+    var remainingTokens: Int64 {
+        max(0, capacityTokens - inputTokens)
+    }
+
+    var usedPercent: Double? {
+        guard available, capacityTokens > 0 else { return nil }
+        return min(100, max(0, Double(inputTokens) * 100 / Double(capacityTokens)))
+    }
+}
+
+struct ConversationTokenUsage {
+    var sessionID = "unknown"
+    var projectPath: String?
+    var projectName = "Unknown project"
+    var startedAt = Date.distantPast
+    var updatedAt = Date.distantPast
+    var tokens: Int64 = 0
+}
+
+struct ProjectTokenUsage {
+    var projectPath: String?
+    var projectName = "Unknown project"
+    var tokens: Int64 = 0
+    var conversations = 0
+}
+
 struct TokenHistorySnapshot {
     var available = false
     var status = "loading"
@@ -64,6 +105,9 @@ struct TokenHistorySnapshot {
     var sessionFiles = 0
     var reusedFiles = 0
     var days: [DailyTokenUsage] = []
+    var context = ContextCapacitySnapshot()
+    var projects: [ProjectTokenUsage] = []
+    var conversations: [ConversationTokenUsage] = []
 }
 
 enum TokenDetailView: Int {

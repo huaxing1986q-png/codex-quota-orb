@@ -55,6 +55,8 @@ final class TokenHistoryService: @unchecked Sendable {
     private let store: PreferencesStore
     private let calendar = Calendar.autoupdatingCurrent
     private let maxCacheBytes = 8 * 1024 * 1024
+    private let maxContextTailBytes: UInt64 = 4 * 1024 * 1024
+    private let maxContextCandidateFiles = 12
 
     init(store: PreferencesStore = .shared) {
         self.store = store
@@ -62,6 +64,7 @@ final class TokenHistoryService: @unchecked Sendable {
 
     func read() -> TokenHistorySnapshot {
         let files = sessionFiles()
+        let context = readCurrentContext()
         guard !files.isEmpty else {
             return TokenHistorySnapshot(
                 available: true,
@@ -75,13 +78,16 @@ final class TokenHistoryService: @unchecked Sendable {
                 monthTokens: 0,
                 sessionFiles: 0,
                 reusedFiles: 0,
-                days: []
+                days: [],
+                context: context
             )
         }
 
         var cache = readCache()
         var nextFiles: [String: HistoryCacheEntry] = [:]
         var totals: [String: Int64] = [:]
+        var conversations: [ConversationTokenUsage] = []
+        var projects: [String: ProjectTokenUsage] = [:]
         var reused = 0
         var earliest: String?
 
@@ -100,6 +106,16 @@ final class TokenHistoryService: @unchecked Sendable {
                 entry = scan(file, length: length, modified: modified)
             }
             nextFiles[key] = entry
+            let conversation = readConversation(file, tokens: entry.totalTokens)
+            conversations.append(conversation)
+            let projectKey = conversation.projectPath ?? "(unknown)"
+            var project = projects[projectKey] ?? ProjectTokenUsage(
+                projectPath: conversation.projectPath,
+                projectName: conversation.projectName
+            )
+            project.tokens = safeAdd(project.tokens, conversation.tokens)
+            project.conversations += 1
+            projects[projectKey] = project
             for (day, count) in entry.days {
                 totals[day] = safeAdd(totals[day] ?? 0, count)
             }
@@ -140,18 +156,104 @@ final class TokenHistoryService: @unchecked Sendable {
             monthTokens: monthTokens,
             sessionFiles: files.count,
             reusedFiles: reused,
-            days: ordered
+            days: ordered,
+            context: context,
+            projects: projects.values.sorted {
+                if $0.tokens != $1.tokens { return $0.tokens > $1.tokens }
+                return $0.projectName.localizedCaseInsensitiveCompare($1.projectName) == .orderedAscending
+            },
+            conversations: conversations.sorted {
+                if $0.tokens != $1.tokens { return $0.tokens > $1.tokens }
+                return $0.updatedAt > $1.updatedAt
+            }
         )
     }
 
-    private func sessionFiles() -> [URL] {
-        let environment = ProcessInfo.processInfo.environment
-        let home: URL
-        if let custom = environment["CODEX_HOME"], !custom.isEmpty {
-            home = URL(fileURLWithPath: NSString(string: custom).expandingTildeInPath)
-        } else {
-            home = FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent(".codex")
+    private func readCurrentContext() -> ContextCapacitySnapshot {
+        let candidates = activeSessionFiles().prefix(maxContextCandidateFiles)
+        for file in candidates {
+            if let snapshot = readLatestContext(from: file) {
+                return snapshot
+            }
         }
+        return ContextCapacitySnapshot(
+            available: false,
+            status: candidates.isEmpty ? "empty" : "unavailable"
+        )
+    }
+
+    private func readLatestContext(from file: URL) -> ContextCapacitySnapshot? {
+        guard let handle = try? FileHandle(forReadingFrom: file) else { return nil }
+        defer { try? handle.close() }
+        guard let length = try? handle.seekToEnd(), length > 0 else { return nil }
+        let start = length > maxContextTailBytes ? length - maxContextTailBytes : 0
+        do {
+            try handle.seek(toOffset: start)
+            guard let data = try handle.readToEnd(), !data.isEmpty else { return nil }
+            for rawLine in data.split(separator: 0x0A).reversed() {
+                let line = Data(rawLine)
+                guard
+                    line.range(of: Data(#""token_count""#.utf8)) != nil,
+                    line.range(of: Data(#""model_context_window""#.utf8)) != nil,
+                    let parsed = parseContext(line)
+                else { continue }
+                return parsed
+            }
+        } catch {
+            return nil
+        }
+        return nil
+    }
+
+    private func parseContext(_ line: Data) -> ContextCapacitySnapshot? {
+        guard
+            let root = try? JSONSerialization.jsonObject(with: line) as? [String: Any],
+            root["type"] as? String == "event_msg",
+            let payload = root["payload"] as? [String: Any],
+            payload["type"] as? String == "token_count",
+            let info = payload["info"] as? [String: Any],
+            let last = info["last_token_usage"] as? [String: Any]
+        else { return nil }
+
+        let capacity = Self.int64(info["model_context_window"])
+        let input = Self.int64(last["input_tokens"])
+        guard capacity > 0, input >= 0 else { return nil }
+        let cached = min(input, max(0, Self.int64(last["cached_input_tokens"])))
+        let total = info["total_token_usage"] as? [String: Any]
+        return ContextCapacitySnapshot(
+            available: true,
+            status: "ok",
+            sampledAt: (root["timestamp"] as? String).flatMap(Self.isoDate),
+            capacityTokens: capacity,
+            inputTokens: input,
+            cachedInputTokens: cached,
+            outputTokens: max(0, Self.int64(last["output_tokens"])),
+            reasoningOutputTokens: max(0, Self.int64(last["reasoning_output_tokens"])),
+            sessionTotalTokens: max(0, Self.int64(total?["total_tokens"]))
+        )
+    }
+
+    private func activeSessionFiles() -> [URL] {
+        let root = codexHome().appendingPathComponent("sessions", isDirectory: true)
+        let keys: Set<URLResourceKey> = [.isRegularFileKey, .contentModificationDateKey]
+        guard let enumerator = FileManager.default.enumerator(
+            at: root,
+            includingPropertiesForKeys: Array(keys),
+            options: [.skipsHiddenFiles, .skipsPackageDescendants]
+        ) else { return [] }
+        var files: [(URL, Date)] = []
+        for case let url as URL in enumerator where url.pathExtension.lowercased() == "jsonl" {
+            guard let values = try? url.resourceValues(forKeys: keys), values.isRegularFile == true else { continue }
+            files.append((url, values.contentModificationDate ?? .distantPast))
+        }
+        return files.sorted {
+            if $0.1 != $1.1 { return $0.1 > $1.1 }
+            return $0.0.path > $1.0.path
+        }.map { $0.0 }
+    }
+
+    private func sessionFiles() -> [URL] {
+        let home = codexHome()
         let roots = [
             home.appendingPathComponent("sessions", isDirectory: true),
             home.appendingPathComponent("archived_sessions", isDirectory: true)
@@ -171,6 +273,53 @@ final class TokenHistoryService: @unchecked Sendable {
             }
         }
         return result.sorted { $0.path < $1.path }
+    }
+
+    private func codexHome() -> URL {
+        let environment = ProcessInfo.processInfo.environment
+        if let custom = environment["CODEX_HOME"], !custom.isEmpty {
+            return URL(fileURLWithPath: NSString(string: custom).expandingTildeInPath)
+        }
+        return FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent(".codex")
+    }
+
+    private func readConversation(_ file: URL, tokens: Int64) -> ConversationTokenUsage {
+        let values = try? file.resourceValues(forKeys: [.creationDateKey, .contentModificationDateKey])
+        var result = ConversationTokenUsage(
+            sessionID: file.deletingPathExtension().lastPathComponent,
+            startedAt: values?.creationDate ?? .distantPast,
+            updatedAt: values?.contentModificationDate ?? .distantPast,
+            tokens: max(0, tokens)
+        )
+        guard let reader = try? JSONLineReader(url: file) else { return result }
+        for _ in 0 ..< 24 {
+            let next: Data?
+            do {
+                next = try reader.next()
+            } catch {
+                break
+            }
+            guard let line = next else { break }
+            guard line.range(of: Data(#""session_meta""#.utf8)) != nil else { continue }
+            guard
+                let root = try? JSONSerialization.jsonObject(with: line) as? [String: Any],
+                root["type"] as? String == "session_meta",
+                let payload = root["payload"] as? [String: Any]
+            else { continue }
+            if let id = payload["id"] as? String, !id.isEmpty {
+                result.sessionID = id
+            }
+            if let cwd = payload["cwd"] as? String, !cwd.isEmpty {
+                result.projectPath = cwd
+                let name = URL(fileURLWithPath: cwd).standardizedFileURL.lastPathComponent
+                result.projectName = name.isEmpty ? cwd : name
+            }
+            if let timestamp = root["timestamp"] as? String, let started = Self.isoDate(timestamp) {
+                result.startedAt = started
+            }
+            break
+        }
+        return result
     }
 
     private func scan(_ file: URL, length: UInt64, modified: TimeInterval) -> HistoryCacheEntry {

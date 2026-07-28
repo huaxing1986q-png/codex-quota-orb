@@ -42,8 +42,8 @@ enum Copy {
 
     static func localDisclosure(_ language: AppLanguage) -> String {
         language == .chinese
-            ? "统计这台 Mac 上保留的 Codex 本地会话记录；不用于估算官方配额。"
-            : "Based on Codex sessions stored on this Mac; never used to estimate official quota."
+            ? "当前上下文与本机 Token 历史分开统计；两者均不用于估算官方配额。"
+            : "Current context and local Token history are separate; neither estimates official quota."
     }
 }
 

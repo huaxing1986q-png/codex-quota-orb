@@ -1,6 +1,6 @@
 ---
 name: codex-monitor-overlay
-description: Operate the native macOS or Windows Codex Quota Orb, including its authoritative weekly quota display, draggable high-DPI floating window, and local Codex token-history details page.
+description: Operate the native macOS or Windows Codex Quota Orb, including its authoritative weekly quota display, current-session context capacity, draggable high-DPI floating window, and local Codex token-history details page.
 ---
 
 # Codex Quota Orb
@@ -50,7 +50,11 @@ When always-on-top is disabled, the orb appears while Codex or the empty desktop
 - Click the expanded weekly quota region, or press `Enter` / `Space`, to open and foreground the Codex Token usage details page. Keep the details form in the monitor's existing process so no PowerShell console is created; reuse the same form on later clicks. Do not add a separate icon for this action.
 - `Esc`: collapse the card; from the collapsed state, close the current monitor process.
 
-The details page shows local-history total, today, current month, current week, a daily heatmap, weekly trend, and cumulative trend. `Left` / `Right` switches views, `F5` or `Ctrl+R` refreshes, and `Esc` closes the details page.
+The details page shows current-session context capacity and structure, local-history total, today, current month, current week, a daily heatmap, weekly trend, and cumulative trend. Context capacity uses the newest numeric `token_count` event in the active session: `model_context_window` is capacity and the latest `last_token_usage.input_tokens` is occupied input context. Cached input is a subset of input; reasoning output is a subset of output. Never add those subsets twice.
+
+Click the full current-context region to open the next-level capacity and usage page. It has three views: capacity structure; per-project share grouped by the `session_meta.cwd` path; and every conversation sorted by its numeric Token total. Conversation labels use date/time plus a short session ID and never derive a title from message text. The page must include a text `Back` / `返回` control; `Esc` also returns to the parent details page. Project paths and session IDs are parsed in memory and must not be written to the numeric history cache.
+
+`Left` / `Right` switches history views, `F5` or `Ctrl+R` refreshes, and `Esc` closes the details page.
 
 On Windows, preferences are stored in `%LOCALAPPDATA%\CodexMonitorOverlay\preferences.json` and numeric history cache in `%LOCALAPPDATA%\CodexMonitorOverlay\token-history-cache.json`.
 
@@ -65,6 +69,8 @@ On Windows, preferences are stored in `%LOCALAPPDATA%\CodexMonitorOverlay\prefer
 - Focus and click-to-expand trigger a refresh with a 2-second minimum request spacing.
 - On a transient failure, retain the last successful values for at most 30 minutes and mark them stale. Never fabricate values or silently fall back to local token estimates.
 - Keep quota and token-history semantics separate. The floating percentage is official account quota. The details page reads only numeric `token_count` events from local Codex JSONL sessions and must never be described as account quota.
+- Keep context capacity separate from both account quota and cumulative history. Context usage is latest input divided by `model_context_window`; cumulative session tokens must never be divided by the context window.
+- Context remaining `>= 50%` is Healthy with no cleanup prompt, `10–49%` is Caution with a prompt to trim unrelated context, and `< 10%` is Critical with a prompt to summarize and start a new task.
 - Aggregate token increments by each event's local calendar date. Reuse cache only when the source file length and last-write timestamp are unchanged.
 - macOS uses native AppKit/Retina drawing; Windows uses Per-Monitor DPI V2. Both must re-render at the destination monitor's native scale and never upscale a fixed bitmap for 4K displays.
 
@@ -98,6 +104,6 @@ powershell.exe -NoProfile -ExecutionPolicy Bypass -File "<plugin-root>\scripts\C
 
 - Never print, persist, or expose access tokens, account IDs, request headers, or raw quota responses.
 - Do not send the Codex token anywhere except the ChatGPT quota endpoint named above.
-- Never persist prompt text, message text, raw session events, or raw quota responses. The local history cache contains only file fingerprints and daily numeric totals.
+- Never persist prompt text, message text, raw session events, raw context events, or raw quota responses. The local history cache contains only file fingerprints and daily numeric totals; context details are re-read from the active session and are not cached.
 - Do not redeem reset credits or change account settings.
 - Do not claim exact real-time synchronization when the upstream service has not published a changed value; report the last verified sample or stale state honestly.

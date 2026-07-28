@@ -26,6 +26,7 @@ New-Item -ItemType Directory -Path $packageScripts -Force | Out-Null
 
 foreach ($name in @(
     'CodexMonitor.Data.cs',
+    'CodexMonitor.ContextDetails.cs',
     'CodexMonitor.Details.cs',
     'CodexMonitor.History.cs',
     'CodexMonitor.UI.cs',

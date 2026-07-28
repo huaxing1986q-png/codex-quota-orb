@@ -2,23 +2,25 @@ import AppKit
 
 final class TokenDetailsWindowController: NSWindowController, NSWindowDelegate {
     private let detailsView: TokenDetailsView
+    private let contextBreakdown: ContextBreakdownWindowController
     var onRefresh: (() -> Void)? {
         didSet { detailsView.onRefresh = onRefresh }
     }
     var onVisibilityChanged: ((Bool) -> Void)?
 
     init(snapshot: TokenHistorySnapshot, language: AppLanguage) {
-        detailsView = TokenDetailsView(frame: NSRect(x: 0, y: 0, width: 1120, height: 620))
+        detailsView = TokenDetailsView(frame: NSRect(x: 0, y: 0, width: 1120, height: 780))
+        contextBreakdown = ContextBreakdownWindowController(snapshot: snapshot, language: language)
         detailsView.snapshot = snapshot
         detailsView.language = language
         let window = NSWindow(
-            contentRect: NSRect(x: 0, y: 0, width: 1120, height: 620),
+            contentRect: NSRect(x: 0, y: 0, width: 1120, height: 780),
             styleMask: [.titled, .closable, .miniaturizable, .resizable],
             backing: .buffered,
             defer: false
         )
         window.contentView = detailsView
-        window.minSize = NSSize(width: 920, height: 560)
+        window.minSize = NSSize(width: 920, height: 690)
         window.title = Copy.tokenDetails(language)
         window.titleVisibility = .hidden
         window.titlebarAppearsTransparent = true
@@ -28,6 +30,15 @@ final class TokenDetailsWindowController: NSWindowController, NSWindowDelegate {
         super.init(window: window)
         window.delegate = self
         detailsView.onClose = { [weak window] in window?.performClose(nil) }
+        detailsView.onContextDetails = { [weak self] in
+            guard let self else { return }
+            self.contextBreakdown.update(snapshot: self.detailsView.snapshot, language: self.detailsView.language)
+            self.contextBreakdown.present(relativeTo: self.window)
+        }
+        contextBreakdown.onReturn = { [weak self] in
+            self?.window?.makeKeyAndOrderFront(nil)
+            self?.window?.makeFirstResponder(self?.detailsView)
+        }
     }
 
     required init?(coder: NSCoder) {
@@ -41,6 +52,7 @@ final class TokenDetailsWindowController: NSWindowController, NSWindowDelegate {
     func update(snapshot: TokenHistorySnapshot, language: AppLanguage) {
         detailsView.snapshot = snapshot
         detailsView.language = language
+        contextBreakdown.update(snapshot: snapshot, language: language)
         window?.title = Copy.tokenDetails(language)
         detailsView.needsDisplay = true
     }
@@ -57,10 +69,12 @@ final class TokenDetailsWindowController: NSWindowController, NSWindowDelegate {
     }
 
     func windowWillClose(_ notification: Notification) {
+        contextBreakdown.closeForParent()
         onVisibilityChanged?(false)
     }
 
     func windowDidMiniaturize(_ notification: Notification) {
+        contextBreakdown.closeForParent()
         onVisibilityChanged?(false)
     }
 
@@ -75,10 +89,13 @@ private final class TokenDetailsView: NSView {
     var selected: TokenDetailView = .daily
     var onRefresh: (() -> Void)?
     var onClose: (() -> Void)?
+    var onContextDetails: (() -> Void)?
 
     private var tabRects: [(TokenDetailView, NSRect)] = []
     private var hoveredTab: TokenDetailView?
     private var trackingReference: NSTrackingArea?
+    private var contextRect = NSRect.zero
+    private var hoveringContext = false
 
     override var isFlipped: Bool { true }
     override var acceptsFirstResponder: Bool { true }
@@ -98,6 +115,12 @@ private final class TokenDetailsView: NSView {
 
     override func mouseMoved(with event: NSEvent) {
         let point = convert(event.locationInWindow, from: nil)
+        let nextContext = contextRect.contains(point)
+        if nextContext != hoveringContext {
+            hoveringContext = nextContext
+            needsDisplay = true
+        }
+        (nextContext ? NSCursor.pointingHand : NSCursor.arrow).set()
         let next = tabRects.first { $0.1.contains(point) }?.0
         if next != hoveredTab {
             hoveredTab = next
@@ -107,11 +130,17 @@ private final class TokenDetailsView: NSView {
 
     override func mouseExited(with event: NSEvent) {
         hoveredTab = nil
+        hoveringContext = false
+        NSCursor.arrow.set()
         needsDisplay = true
     }
 
     override func mouseDown(with event: NSEvent) {
         let point = convert(event.locationInWindow, from: nil)
+        if contextRect.contains(point) {
+            onContextDetails?()
+            return
+        }
         if let tab = tabRects.first(where: { $0.1.contains(point) })?.0 {
             selected = tab
             needsDisplay = true
@@ -145,6 +174,7 @@ private final class TokenDetailsView: NSView {
         drawBackground()
         drawHeader()
         drawMetrics()
+        drawContextCapacity()
         drawActivity()
     }
 
@@ -269,9 +299,178 @@ private final class TokenDetailsView: NSView {
         )
     }
 
+    private func drawContextCapacity() {
+        let rect = NSRect(x: 32, y: 260, width: bounds.width - 64, height: 154)
+        contextRect = rect
+        let card = roundedPath(rect, radius: 20)
+        NSGradient(colors: [
+            NSColor(calibratedRed: 239 / 255, green: 248 / 255, blue: 253 / 255, alpha: 0.94),
+            NSColor(calibratedRed: 247 / 255, green: 250 / 255, blue: 246 / 255, alpha: 0.94)
+        ])?.draw(in: card, angle: -8)
+        NSColor.white.withAlpha(0.9).setStroke()
+        card.lineWidth = 0.8
+        card.stroke()
+
+        let context = snapshot.context
+        let usedPercent = context.usedPercent
+        let state = contextStateColor(usedPercent)
+        let heroWidth = max(260, rect.width * 0.34)
+        drawText(
+            language == .chinese ? "当前会话上下文" : "CURRENT SESSION CONTEXT",
+            in: NSRect(x: rect.minX + 24, y: rect.minY + 17, width: heroWidth - 40, height: 24),
+            font: Typography.system(16, weight: .semibold),
+            color: Palette.text
+        )
+        drawText(
+            language == .chinese ? "点击查看容量分布" : "CLICK FOR CAPACITY BREAKDOWN",
+            in: NSRect(x: rect.maxX - 220, y: rect.minY + 20, width: 196, height: 17),
+            font: Typography.system(9.5, weight: .medium),
+            color: hoveringContext ? Palette.accent : Palette.secondary,
+            alignment: .right
+        )
+        drawText(
+            usedPercent.map { String(format: "%.0f%%", $0) } ?? "—",
+            in: NSRect(x: rect.minX + 22, y: rect.minY + 49, width: 92, height: 42),
+            font: Typography.mono(32, weight: .semibold),
+            color: state
+        )
+        let ratio = context.available
+            ? formatTokens(context.inputTokens, language: language) + " / " + formatTokens(context.capacityTokens, language: language)
+            : (language == .chinese ? "等待当前会话数据" : "WAITING FOR CURRENT SESSION")
+        drawText(
+            ratio,
+            in: NSRect(x: rect.minX + 104, y: rect.minY + 65, width: heroWidth - 126, height: 18),
+            font: Typography.mono(10.5, weight: .medium),
+            color: Palette.secondary
+        )
+        drawText(
+            language == .chinese ? "上下文占用" : "CONTEXT USED",
+            in: NSRect(x: rect.minX + 24, y: rect.minY + 104, width: 76, height: 16),
+            font: Typography.system(9.5, weight: .medium),
+            color: Palette.secondary
+        )
+
+        let track = NSRect(x: rect.minX + 104, y: rect.minY + 108, width: max(110, heroWidth - 128), height: 7)
+        Palette.stroke.withAlpha(0.52).setFill()
+        roundedPath(track, radius: 3.5).fill()
+        if let usedPercent {
+            let fill = NSRect(
+                x: track.minX,
+                y: track.minY,
+                width: max(4, min(track.width, track.width * usedPercent / 100)),
+                height: track.height
+            )
+            state.setFill()
+            roundedPath(fill, radius: 3.5).fill()
+        }
+        drawText(
+            contextGuidance(usedPercent),
+            in: NSRect(x: rect.minX + 24, y: rect.minY + 127, width: heroWidth - 42, height: 17),
+            font: Typography.system(9.5, weight: .medium),
+            color: state
+        )
+
+        let detailsX = rect.minX + heroWidth + 18
+        Palette.stroke.withAlpha(0.5).setStroke()
+        let divider = NSBezierPath()
+        divider.move(to: NSPoint(x: detailsX - 12, y: rect.minY + 24))
+        divider.line(to: NSPoint(x: detailsX - 12, y: rect.maxY - 23))
+        divider.lineWidth = 0.8
+        divider.stroke()
+
+        let detailsWidth = rect.maxX - 24 - detailsX
+        let cellWidth = max(90, detailsWidth / 4)
+        drawContextValue(
+            x: detailsX,
+            y: rect.minY + 38,
+            width: cellWidth,
+            label: language == .chinese ? "上下文输入" : "CONTEXT INPUT",
+            value: context.available ? formatTokens(context.inputTokens, language: language) : "—"
+        )
+        drawContextValue(
+            x: detailsX + cellWidth,
+            y: rect.minY + 38,
+            width: cellWidth,
+            label: language == .chinese ? "剩余容量" : "REMAINING",
+            value: context.available ? formatTokens(context.remainingTokens, language: language) : "—"
+        )
+        drawContextValue(
+            x: detailsX + cellWidth * 2,
+            y: rect.minY + 38,
+            width: cellWidth,
+            label: language == .chinese ? "缓存复用" : "CACHED INPUT",
+            value: context.available ? formatTokens(context.cachedInputTokens, language: language) : "—"
+        )
+        drawContextValue(
+            x: detailsX + cellWidth * 3,
+            y: rect.minY + 38,
+            width: max(80, detailsWidth - cellWidth * 3),
+            label: language == .chinese ? "新增输入" : "FRESH INPUT",
+            value: context.available ? formatTokens(context.freshInputTokens, language: language) : "—"
+        )
+
+        let footer: String
+        if context.available {
+            if language == .chinese {
+                footer = "上轮输出 \(formatTokens(context.outputTokens, language: language))"
+                    + " · 推理 \(formatTokens(context.reasoningOutputTokens, language: language))（输出子集）"
+                    + " · 会话累计 \(formatTokens(context.sessionTotalTokens, language: language))"
+            } else {
+                footer = "LAST OUTPUT \(formatTokens(context.outputTokens, language: language))"
+                    + " · REASONING \(formatTokens(context.reasoningOutputTokens, language: language)) (OUTPUT SUBSET)"
+                    + " · SESSION CUMULATIVE \(formatTokens(context.sessionTotalTokens, language: language))"
+            }
+        } else {
+            footer = language == .chinese
+                ? "仅显示当前活动会话的最新数值记录"
+                : "USES THE NEWEST NUMERIC RECORD FROM THE CURRENT ACTIVE SESSION"
+        }
+        drawText(
+            footer,
+            in: NSRect(x: detailsX, y: rect.maxY - 31, width: detailsWidth, height: 18),
+            font: Typography.system(9.5),
+            color: Palette.secondary
+        )
+    }
+
+    private func drawContextValue(x: CGFloat, y: CGFloat, width: CGFloat, label: String, value: String) {
+        drawText(
+            label,
+            in: NSRect(x: x, y: y, width: width - 8, height: 17),
+            font: Typography.system(9.5),
+            color: Palette.secondary
+        )
+        drawText(
+            value,
+            in: NSRect(x: x, y: y + 25, width: width - 8, height: 23),
+            font: Typography.mono(14, weight: .semibold),
+            color: Palette.text
+        )
+    }
+
+    private func contextStateColor(_ usedPercent: Double?) -> NSColor {
+        guard let usedPercent else { return Palette.secondary.withAlphaComponent(0.62) }
+        if usedPercent <= 50 { return Palette.healthy }
+        if usedPercent <= 90 { return Palette.caution }
+        return Palette.critical
+    }
+
+    private func contextGuidance(_ usedPercent: Double?) -> String {
+        guard let usedPercent else {
+            return language == .chinese ? "状态不可用" : "STATUS UNAVAILABLE"
+        }
+        if usedPercent <= 50 {
+            return language == .chinese ? "健康 · 暂无需整理" : "HEALTHY · NO CLEANUP NEEDED"
+        }
+        if usedPercent <= 90 {
+            return language == .chinese ? "谨慎 · 建议整理无关上下文" : "CAUTION · TRIM UNRELATED CONTEXT"
+        }
+        return language == .chinese ? "紧急 · 建议总结后新建任务" : "CRITICAL · SUMMARIZE AND START A NEW TASK"
+    }
+
     private func drawActivity() {
         let left: CGFloat = 32
-        let top: CGFloat = 260
+        let top: CGFloat = 438
         let rect = NSRect(x: left, y: top, width: bounds.width - left * 2, height: bounds.height - top - 28)
         let card = roundedPath(rect, radius: 20)
         NSColor.white.withAlpha(0.68).setFill()

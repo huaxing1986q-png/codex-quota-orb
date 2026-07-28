@@ -28,15 +28,17 @@ if ([string]::IsNullOrWhiteSpace($SessionsRoot)) {
 $dataSource = Join-Path $PSScriptRoot 'CodexMonitor.Data.cs'
 $historySource = Join-Path $PSScriptRoot 'CodexMonitor.History.cs'
 $detailsSource = Join-Path $PSScriptRoot 'CodexMonitor.Details.cs'
+$contextDetailsSource = Join-Path $PSScriptRoot 'CodexMonitor.ContextDetails.cs'
 $uiSource = Join-Path $PSScriptRoot 'CodexMonitor.UI.cs'
 if (-not (Test-Path -LiteralPath $dataSource) -or
     -not (Test-Path -LiteralPath $historySource) -or
     -not (Test-Path -LiteralPath $detailsSource) -or
+    -not (Test-Path -LiteralPath $contextDetailsSource) -or
     -not (Test-Path -LiteralPath $uiSource)) {
     throw "Monitor source is incomplete in: $PSScriptRoot"
 }
 
-Add-Type -Path @($dataSource, $historySource, $detailsSource, $uiSource) -ReferencedAssemblies @(
+Add-Type -Path @($dataSource, $historySource, $contextDetailsSource, $detailsSource, $uiSource) -ReferencedAssemblies @(
     'System.dll',
     'System.Core.dll',
     'System.Drawing.dll',
