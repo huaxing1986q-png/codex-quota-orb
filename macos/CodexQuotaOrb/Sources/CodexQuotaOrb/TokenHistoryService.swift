@@ -48,12 +48,15 @@ private final class JSONLineReader {
     func next() throws -> Data? {
         while true {
             if let newline = buffer.firstIndex(of: 0x0A) {
-                let line = buffer[..<newline]
+                // Copy the line before mutating the backing buffer. Data slices can
+                // share storage with their parent, so removing the prefix first can
+                // otherwise invalidate the bytes returned to the JSON parser.
+                let line = Data(buffer[..<newline])
                 let consumed = buffer.distance(from: buffer.startIndex, to: newline) + 1
                 buffer.removeSubrange(...newline)
                 completedOffset += UInt64(consumed)
                 lastLineTerminated = true
-                return Data(line)
+                return line
             }
             if reachedEnd {
                 guard !buffer.isEmpty else { return nil }
@@ -154,55 +157,66 @@ final class TokenHistoryService: @unchecked Sendable {
             if occupancyEntry.contextOccupiedTokens != 80 || occupancyEntry.contextCapacityTokens != 200 {
                 failures.append("context occupancy should use the conversation's latest snapshot")
             }
+            let incrementalFile = temporary.appendingPathComponent("incremental-history.jsonl")
+            let incrementalSeed = """
+            {"timestamp":"2026-07-21T02:00:00Z","type":"event_msg","payload":{"type":"token_count","info":{"total_token_usage":{"total_tokens":300},"last_token_usage":{"total_tokens":300},"model_context_window":200}}}
+            """
+            try Data((incrementalSeed + "\n").utf8).write(to: incrementalFile)
+            let seedValues = try incrementalFile.resourceValues(forKeys: [.fileSizeKey, .contentModificationDateKey])
+            let incrementalBase = scan(
+                incrementalFile,
+                length: UInt64(max(0, seedValues.fileSize ?? 0)),
+                modified: seedValues.contentModificationDate?.timeIntervalSince1970 ?? 0
+            )
             let incrementalLine = """
             {"timestamp":"2026-07-21T02:10:00Z","type":"event_msg","payload":{"type":"token_count","info":{"total_token_usage":{"total_tokens":360},"last_token_usage":{"total_tokens":60},"model_context_window":200}}}
             """
-            let appendIncremental = try FileHandle(forWritingTo: active)
+            let appendIncremental = try FileHandle(forWritingTo: incrementalFile)
             try appendIncremental.seekToEnd()
             try appendIncremental.write(contentsOf: Data((incrementalLine + "\n").utf8))
             try appendIncremental.close()
-            let incrementalValues = try active.resourceValues(forKeys: [.fileSizeKey, .contentModificationDateKey])
+            let incrementalValues = try incrementalFile.resourceValues(forKeys: [.fileSizeKey, .contentModificationDateKey])
             let incrementalEntry = scan(
-                active,
+                incrementalFile,
                 length: UInt64(max(0, incrementalValues.fileSize ?? 0)),
                 modified: incrementalValues.contentModificationDate?.timeIntervalSince1970 ?? 0,
-                base: occupancyEntry
+                base: incrementalBase
             )
             if incrementalEntry.totalTokens != 360 {
-                failures.append("history cache should incrementally parse appended token lines")
+                failures.append("history cache should incrementally parse appended token lines: \(incrementalEntry.totalTokens)")
             }
             let partialText = """
             {"timestamp":"2026-07-21T02:20:00Z","type":"event_msg","payload":{"type":"token_count","info":{"total_token_usage":{"total_tokens":400},"last_token_usage":{"total_tokens":40},"model_context_window":200}}}
             """
             let partialLine = Data((partialText + "\n").utf8)
             let split = partialLine.count / 2
-            let appendPartial = try FileHandle(forWritingTo: active)
+            let appendPartial = try FileHandle(forWritingTo: incrementalFile)
             try appendPartial.seekToEnd()
             try appendPartial.write(contentsOf: Data(partialLine.prefix(split)))
             try appendPartial.close()
-            let partialValues = try active.resourceValues(forKeys: [.fileSizeKey, .contentModificationDateKey])
+            let partialValues = try incrementalFile.resourceValues(forKeys: [.fileSizeKey, .contentModificationDateKey])
             let partialEntry = scan(
-                active,
+                incrementalFile,
                 length: UInt64(max(0, partialValues.fileSize ?? 0)),
                 modified: partialValues.contentModificationDate?.timeIntervalSince1970 ?? 0,
                 base: incrementalEntry
             )
             if partialEntry.totalTokens != 360 || partialEntry.length != incrementalEntry.length {
-                failures.append("history cache should ignore incomplete appended lines")
+                failures.append("history cache should ignore incomplete appended lines: \(partialEntry.totalTokens)/\(partialEntry.length)/\(incrementalEntry.length)")
             }
-            let appendRemainder = try FileHandle(forWritingTo: active)
+            let appendRemainder = try FileHandle(forWritingTo: incrementalFile)
             try appendRemainder.seekToEnd()
             try appendRemainder.write(contentsOf: Data(partialLine.suffix(from: split)))
             try appendRemainder.close()
-            let completedValues = try active.resourceValues(forKeys: [.fileSizeKey, .contentModificationDateKey])
+            let completedValues = try incrementalFile.resourceValues(forKeys: [.fileSizeKey, .contentModificationDateKey])
             let completedEntry = scan(
-                active,
+                incrementalFile,
                 length: UInt64(max(0, completedValues.fileSize ?? 0)),
                 modified: completedValues.contentModificationDate?.timeIntervalSince1970 ?? 0,
                 base: partialEntry
             )
             if completedEntry.totalTokens != 400 {
-                failures.append("history cache should count a completed partial line exactly once")
+                failures.append("history cache should count a completed partial line exactly once: \(completedEntry.totalTokens)")
             }
             let selected = selectCurrentContext(from: [background, active])
             if selected?.sessionTotalTokens != 300 {
