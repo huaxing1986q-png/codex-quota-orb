@@ -241,7 +241,31 @@ namespace CodexMonitor
                 double[] emptyShares = ContextBreakdownForm.ReconciledPercentShares(new long[] { 0, 0 }, 0);
                 if (emptyShares.Length != 2 || emptyShares[0] != 0 || emptyShares[1] != 0)
                     failures.Add("zero total shares remain zero");
-                return 7;
+                long nowTicks = DateTime.UtcNow.Ticks;
+                if (!QuotaMonitorForm.SessionDirtyReady(
+                    nowTicks,
+                    nowTicks - TimeSpan.FromMilliseconds(300).Ticks,
+                    nowTicks - TimeSpan.FromMilliseconds(500).Ticks,
+                    0))
+                    failures.Add("quiet session changes refresh after 250 milliseconds");
+                if (QuotaMonitorForm.SessionDirtyReady(
+                    nowTicks,
+                    nowTicks - TimeSpan.FromMilliseconds(100).Ticks,
+                    nowTicks - TimeSpan.FromSeconds(1).Ticks,
+                    0))
+                    failures.Add("active session writes remain coalesced before the bound");
+                if (!QuotaMonitorForm.SessionDirtyReady(
+                    nowTicks,
+                    nowTicks - TimeSpan.FromMilliseconds(100).Ticks,
+                    nowTicks - TimeSpan.FromSeconds(3).Ticks,
+                    0))
+                    failures.Add("continuous session writes refresh within two seconds");
+                UsageSnapshot normal = new UsageSnapshot { Available = true };
+                if (QuotaMonitorForm.SuccessInterval(normal, DateTime.UtcNow, DateTime.MinValue) != TimeSpan.FromSeconds(30))
+                    failures.Add("normal quota calibration stays at 30 seconds");
+                if (QuotaMonitorForm.SuccessInterval(normal, DateTime.UtcNow, DateTime.UtcNow.AddSeconds(12)) != TimeSpan.FromSeconds(2))
+                    failures.Add("session catch-up calibration uses two-second spacing");
+                return 12;
             }
             finally
             {
@@ -298,7 +322,9 @@ namespace CodexMonitor
         private DateTime interactionGraceUntil = DateTime.MinValue;
         private int failures;
         private long sessionDirtyTicks;
+        private long sessionFirstDirtyTicks;
         private long handledDirtyTicks;
+        private DateTime quotaCatchUpUntil = DateTime.MinValue;
         private bool wasEligible;
         private bool expandedTarget;
         private bool animationActive;
@@ -440,14 +466,21 @@ namespace CodexMonitor
                 sessionWatcher = new FileSystemWatcher(sessionsRoot, "*.jsonl");
                 sessionWatcher.IncludeSubdirectories = true;
                 sessionWatcher.NotifyFilter = NotifyFilters.LastWrite | NotifyFilters.Size | NotifyFilters.FileName;
-                FileSystemEventHandler changed = delegate { System.Threading.Interlocked.Exchange(ref sessionDirtyTicks, DateTime.UtcNow.Ticks); };
-                RenamedEventHandler renamed = delegate { System.Threading.Interlocked.Exchange(ref sessionDirtyTicks, DateTime.UtcNow.Ticks); };
+                FileSystemEventHandler changed = delegate { MarkSessionsDirty(); };
+                RenamedEventHandler renamed = delegate { MarkSessionsDirty(); };
                 sessionWatcher.Changed += changed;
                 sessionWatcher.Created += changed;
                 sessionWatcher.Renamed += renamed;
                 sessionWatcher.EnableRaisingEvents = true;
             }
             catch { }
+        }
+
+        private void MarkSessionsDirty()
+        {
+            long ticks = DateTime.UtcNow.Ticks;
+            System.Threading.Interlocked.CompareExchange(ref sessionFirstDirtyTicks, ticks, 0);
+            System.Threading.Interlocked.Exchange(ref sessionDirtyTicks, ticks);
         }
 
         private void MonitorTick(object sender, EventArgs args)
@@ -516,9 +549,13 @@ namespace CodexMonitor
         {
             DateTime now = DateTime.UtcNow;
             long dirty = System.Threading.Interlocked.Read(ref sessionDirtyTicks);
-            if (dirty > handledDirtyTicks && now.Ticks - dirty >= TimeSpan.FromMilliseconds(750).Ticks)
+            long firstDirty = System.Threading.Interlocked.Read(ref sessionFirstDirtyTicks);
+            if (SessionDirtyReady(now.Ticks, dirty, firstDirty, handledDirtyTicks))
             {
                 handledDirtyTicks = dirty;
+                System.Threading.Interlocked.Exchange(ref sessionFirstDirtyTicks, 0);
+                quotaCatchUpUntil = now.AddSeconds(12);
+                nextRefresh = DateTime.MinValue;
                 StartRefresh(true);
                 return;
             }
@@ -547,7 +584,8 @@ namespace CodexMonitor
                 usage = next;
                 lastSuccess = next.Clone();
                 failures = 0;
-                nextRefresh = DateTime.UtcNow.Add(GetHealthyInterval(next));
+                DateTime completedAt = DateTime.UtcNow;
+                nextRefresh = completedAt.Add(SuccessInterval(next, completedAt, quotaCatchUpUntil));
             }
             else
             {
@@ -564,6 +602,20 @@ namespace CodexMonitor
             }
             UpdateDataToolTip();
             RefreshVisual();
+        }
+
+        internal static bool SessionDirtyReady(long nowTicks, long dirtyTicks, long firstDirtyTicks, long handledTicks)
+        {
+            if (dirtyTicks <= handledTicks) return false;
+            bool quietEnough = nowTicks - dirtyTicks >= TimeSpan.FromMilliseconds(250).Ticks;
+            bool boundedWaitReached = firstDirtyTicks > 0
+                && nowTicks - firstDirtyTicks >= TimeSpan.FromSeconds(2).Ticks;
+            return quietEnough || boundedWaitReached;
+        }
+
+        internal static TimeSpan SuccessInterval(UsageSnapshot value, DateTime now, DateTime catchUpUntil)
+        {
+            return now < catchUpUntil ? TimeSpan.FromSeconds(2) : GetHealthyInterval(value);
         }
 
         private static TimeSpan GetHealthyInterval(UsageSnapshot value)

@@ -114,6 +114,7 @@ namespace CodexMonitor
         public long Length { get; set; }
         public long LastWriteUtcTicks { get; set; }
         public long TotalTokens { get; set; }
+        public long LastCumulativeTotal { get; set; }
         public long ContextOccupiedTokens { get; set; }
         public long ContextCapacityTokens { get; set; }
         public long ContextCachedInputTokens { get; set; }
@@ -151,7 +152,7 @@ namespace CodexMonitor
 
     public static class TokenHistoryReader
     {
-        private const int CacheVersion = 4;
+        private const int CacheVersion = 5;
         private const int MaxCacheBytes = 8 * 1024 * 1024;
         private const int StreamBufferBytes = 128 * 1024;
         private const int MaxContextTailBytes = 4 * 1024 * 1024;
@@ -221,16 +222,26 @@ namespace CodexMonitor
                     if (progress != null) progress(index, files.Count);
                     string key = RelativeKey(sessionsRoot, file.FullName);
                     HistoryCacheEntry entry;
-                    bool canReuse = cache.Files.TryGetValue(key, out entry)
-                        && entry != null
-                        && entry.Length == file.Length
-                        && entry.LastWriteUtcTicks == file.LastWriteTimeUtc.Ticks
-                        && entry.Days != null;
-                    if (!canReuse)
+                    HistoryCacheEntry cached;
+                    bool hasCached = cache.Files.TryGetValue(key, out cached)
+                        && cached != null
+                        && cached.Days != null;
+                    bool canReuse = hasCached
+                        && cached.Length == file.Length
+                        && cached.LastWriteUtcTicks == file.LastWriteTimeUtc.Ticks;
+                    if (canReuse)
                     {
-                        entry = ScanFile(file);
+                        entry = cached;
+                        reused++;
                     }
-                    else reused++;
+                    else if (hasCached
+                        && cached.Length > 0
+                        && cached.Length < file.Length
+                        && IsCompleteLineBoundary(file, cached.Length))
+                    {
+                        entry = AppendFile(file, cached);
+                    }
+                    else entry = ScanFile(file);
 
                     nextEntries[key] = entry;
                     MergeDays(aggregate, entry.Days);
@@ -374,6 +385,20 @@ namespace CodexMonitor
                 Assert(failures, parsed.Context.OutputTokens == 10 && parsed.Context.ReasoningOutputTokens == 4, "latest context output structure");
                 Assert(failures, parsed.Context.SessionTotalTokens == 300, "context snapshot keeps history total separate");
                 Assert(failures, parsed.Context.ProjectCount == 1 && parsed.Context.ConversationCount == 1, "aggregate context coverage counts");
+                HistoryCacheEntry incrementalBase = ScanFile(new FileInfo(session));
+                string incrementalLine = "{\"timestamp\":\"2026-07-21T02:10:00Z\",\"type\":\"event_msg\",\"payload\":{\"type\":\"token_count\",\"info\":{\"total_token_usage\":{\"total_tokens\":360},\"last_token_usage\":{\"total_tokens\":60},\"model_context_window\":200}}}";
+                File.AppendAllText(session, incrementalLine + Environment.NewLine, new UTF8Encoding(false));
+                HistoryCacheEntry incremental = AppendFile(new FileInfo(session), incrementalBase);
+                Assert(failures, incremental.TotalTokens == 360, "history cache incrementally parses appended token lines");
+                Assert(failures, incremental.Length == new FileInfo(session).Length, "history cache records the complete appended boundary");
+                string partialLine = "{\"timestamp\":\"2026-07-21T02:20:00Z\",\"type\":\"event_msg\",\"payload\":{\"type\":\"token_count\",\"info\":{\"total_token_usage\":{\"total_tokens\":400},\"last_token_usage\":{\"total_tokens\":40},\"model_context_window\":200}}}";
+                int split = partialLine.Length / 2;
+                File.AppendAllText(session, partialLine.Substring(0, split), new UTF8Encoding(false));
+                HistoryCacheEntry partial = AppendFile(new FileInfo(session), incremental);
+                Assert(failures, partial.TotalTokens == 360 && partial.Length == incremental.Length, "history cache ignores an incomplete appended line");
+                File.AppendAllText(session, partialLine.Substring(split) + Environment.NewLine, new UTF8Encoding(false));
+                HistoryCacheEntry completed = AppendFile(new FileInfo(session), partial);
+                Assert(failures, completed.TotalTokens == 400, "history cache counts a completed partial line exactly once");
                 string compactedLine = "{\"timestamp\":\"2026-07-21T04:00:00Z\",\"type\":\"event_msg\",\"payload\":{\"type\":\"token_count\",\"info\":{\"total_token_usage\":{\"total_tokens\":191751509},\"last_token_usage\":{\"input_tokens\":0,\"cached_input_tokens\":0,\"output_tokens\":0,\"reasoning_output_tokens\":0,\"total_tokens\":45442},\"model_context_window\":258400}}}";
                 ContextCapacitySnapshot compacted;
                 Assert(failures, TryParseContextLine(compactedLine, out compacted), "compacted context fixture parses");
@@ -405,7 +430,7 @@ namespace CodexMonitor
                 Assert(failures, reused.ReusedFiles == 0, "changed history files are rescanned");
                 TokenHistorySnapshot reusedAgain = ReadLatest(root, cache, null);
                 Assert(failures, reusedAgain.ReusedFiles == 2, "history cache reuse");
-                return 22;
+                return 26;
             }
             finally
             {
@@ -756,71 +781,202 @@ namespace CodexMonitor
 
         private static HistoryCacheEntry ScanFile(FileInfo file)
         {
-            HistoryCacheEntry entry = new HistoryCacheEntry();
-            entry.Length = file.Length;
+            HistoryCacheEntry entry = new HistoryCacheEntry {
+                Days = new Dictionary<string, long>(StringComparer.Ordinal)
+            };
+            return AppendFile(file, entry);
+        }
+
+        private static HistoryCacheEntry AppendFile(FileInfo file, HistoryCacheEntry cached)
+        {
+            HistoryCacheEntry entry = CloneEntry(cached);
+            long start = Math.Max(0, entry.Length);
+            file.Refresh();
+            long end = Math.Max(start, file.Length);
+            long previousTotal = Math.Max(0, entry.LastCumulativeTotal);
+            DateTime latestContextSample = entry.ContextSampleUtcTicks > 0
+                ? new DateTime(entry.ContextSampleUtcTicks, DateTimeKind.Utc)
+                : DateTime.MinValue;
+            long completed = ProcessFileRange(file, start, end, entry, ref previousTotal, ref latestContextSample);
+            entry.Length = completed;
+            entry.LastCumulativeTotal = Math.Max(0, previousTotal);
+            file.Refresh();
             entry.LastWriteUtcTicks = file.LastWriteTimeUtc.Ticks;
-            entry.Days = new Dictionary<string, long>(StringComparer.Ordinal);
-            long previousTotal = 0;
-            string lastDay = null;
-            DateTime latestContextSample = DateTime.MinValue;
-
-            using (FileStream stream = new FileStream(file.FullName, FileMode.Open, FileAccess.Read, FileShare.ReadWrite | FileShare.Delete, StreamBufferBytes, FileOptions.SequentialScan))
-            using (StreamReader reader = new StreamReader(stream, Encoding.UTF8, true, StreamBufferBytes))
-            {
-                string line;
-                while ((line = reader.ReadLine()) != null)
-                {
-                    if (line.IndexOf("\"token_count\"", StringComparison.Ordinal) < 0) continue;
-                    ContextCapacitySnapshot latestContext;
-                    if (TryParseContextLine(line, out latestContext)
-                        && latestContext != null
-                        && latestContext.SampleUtc >= latestContextSample)
-                    {
-                        latestContextSample = latestContext.SampleUtc;
-                        entry.HasContextSnapshot = true;
-                        entry.ContextOccupiedTokens = Math.Max(0, latestContext.InputTokens);
-                        entry.ContextCapacityTokens = Math.Max(0, latestContext.CapacityTokens);
-                        entry.ContextCachedInputTokens = Math.Max(0, Math.Min(entry.ContextOccupiedTokens, latestContext.CachedInputTokens));
-                        entry.ContextOutputTokens = Math.Max(0, latestContext.OutputTokens);
-                        entry.ContextReasoningOutputTokens = Math.Max(0, Math.Min(entry.ContextOutputTokens, latestContext.ReasoningOutputTokens));
-                        entry.HasContextBreakdown = latestContext.InputBreakdownAvailable;
-                        entry.ContextSampleUtcTicks = latestContext.SampleUtc == DateTime.MinValue ? 0 : latestContext.SampleUtc.Ticks;
-                    }
-                    ParsedTokenLine parsed;
-                    if (!TryParseTokenLine(line, out parsed)) continue;
-                    long delta;
-                    if (parsed.CumulativeTotal > 0)
-                    {
-                        delta = parsed.CumulativeTotal >= previousTotal
-                            ? parsed.CumulativeTotal - previousTotal
-                            : parsed.CumulativeTotal;
-                        previousTotal = parsed.CumulativeTotal;
-                    }
-                    else
-                    {
-                        delta = parsed.IncrementalTotal;
-                        previousTotal = SafeAdd(previousTotal, delta);
-                    }
-                    if (delta <= 0) continue;
-                    string day = parsed.TimestampUtc.ToLocalTime().ToString("yyyy-MM-dd", CultureInfo.InvariantCulture);
-                    long existing;
-                    entry.Days.TryGetValue(day, out existing);
-                    entry.Days[day] = SafeAdd(existing, delta);
-                    entry.TotalTokens = SafeAdd(entry.TotalTokens, delta);
-                    lastDay = day;
-                    if (String.IsNullOrEmpty(entry.FirstDay) || StringComparer.Ordinal.Compare(day, entry.FirstDay) < 0)
-                        entry.FirstDay = day;
-                }
-            }
-
-            if (entry.TotalTokens == 0 && previousTotal > 0 && !String.IsNullOrEmpty(lastDay))
-            {
-                entry.TotalTokens = previousTotal;
-                entry.Days[lastDay] = previousTotal;
-            }
             entry.ContextCachedInputTokens = Math.Min(entry.ContextOccupiedTokens, entry.ContextCachedInputTokens);
             entry.ContextReasoningOutputTokens = Math.Min(entry.ContextOutputTokens, entry.ContextReasoningOutputTokens);
             return entry;
+        }
+
+        private static HistoryCacheEntry CloneEntry(HistoryCacheEntry source)
+        {
+            return new HistoryCacheEntry {
+                Length = source == null ? 0 : Math.Max(0, source.Length),
+                LastWriteUtcTicks = source == null ? 0 : source.LastWriteUtcTicks,
+                TotalTokens = source == null ? 0 : Math.Max(0, source.TotalTokens),
+                LastCumulativeTotal = source == null ? 0 : Math.Max(0, source.LastCumulativeTotal),
+                ContextOccupiedTokens = source == null ? 0 : Math.Max(0, source.ContextOccupiedTokens),
+                ContextCapacityTokens = source == null ? 0 : Math.Max(0, source.ContextCapacityTokens),
+                ContextCachedInputTokens = source == null ? 0 : Math.Max(0, source.ContextCachedInputTokens),
+                ContextOutputTokens = source == null ? 0 : Math.Max(0, source.ContextOutputTokens),
+                ContextReasoningOutputTokens = source == null ? 0 : Math.Max(0, source.ContextReasoningOutputTokens),
+                ContextSampleUtcTicks = source == null ? 0 : source.ContextSampleUtcTicks,
+                HasContextSnapshot = source != null && source.HasContextSnapshot,
+                HasContextBreakdown = source != null && source.HasContextBreakdown,
+                FirstDay = source == null ? null : source.FirstDay,
+                Days = source != null && source.Days != null
+                    ? new Dictionary<string, long>(source.Days, StringComparer.Ordinal)
+                    : new Dictionary<string, long>(StringComparer.Ordinal)
+            };
+        }
+
+        private static long ProcessFileRange(
+            FileInfo file,
+            long start,
+            long end,
+            HistoryCacheEntry entry,
+            ref long previousTotal,
+            ref DateTime latestContextSample)
+        {
+            if (end <= start) return start;
+            byte[] buffer = new byte[StreamBufferBytes];
+            using (FileStream stream = new FileStream(
+                file.FullName,
+                FileMode.Open,
+                FileAccess.Read,
+                FileShare.ReadWrite | FileShare.Delete,
+                StreamBufferBytes,
+                FileOptions.SequentialScan))
+            using (MemoryStream line = new MemoryStream())
+            {
+                stream.Seek(start, SeekOrigin.Begin);
+                long absolute = start;
+                long lastComplete = start;
+                bool discardLine = false;
+                while (absolute < end)
+                {
+                    int requested = (int)Math.Min(buffer.Length, end - absolute);
+                    int read = stream.Read(buffer, 0, requested);
+                    if (read <= 0) break;
+                    int segmentStart = 0;
+                    while (segmentStart < read)
+                    {
+                        int newline = Array.IndexOf(buffer, (byte)10, segmentStart, read - segmentStart);
+                        if (newline < 0)
+                        {
+                            AppendLineBytes(line, buffer, segmentStart, read - segmentStart, ref discardLine);
+                            break;
+                        }
+                        AppendLineBytes(line, buffer, segmentStart, newline - segmentStart, ref discardLine);
+                        if (!discardLine && line.Length > 0)
+                            ProcessTokenLine(Encoding.UTF8.GetString(line.ToArray()), entry, ref previousTotal, ref latestContextSample);
+                        line.SetLength(0);
+                        discardLine = false;
+                        lastComplete = absolute + newline + 1;
+                        segmentStart = newline + 1;
+                    }
+                    absolute += read;
+                }
+                if (!discardLine && line.Length > 0)
+                {
+                    string tail = Encoding.UTF8.GetString(line.ToArray());
+                    if (IsCompleteJsonLine(tail))
+                    {
+                        ProcessTokenLine(tail, entry, ref previousTotal, ref latestContextSample);
+                        lastComplete = end;
+                    }
+                }
+                return lastComplete;
+            }
+        }
+
+        private static bool IsCompleteJsonLine(string line)
+        {
+            if (String.IsNullOrWhiteSpace(line)) return false;
+            try { return Json.DeserializeObject(line) != null; }
+            catch { return false; }
+        }
+
+        private static void AppendLineBytes(
+            MemoryStream line,
+            byte[] buffer,
+            int offset,
+            int count,
+            ref bool discardLine)
+        {
+            if (discardLine || count <= 0) return;
+            if (line.Length + count > MaxContextTailBytes)
+            {
+                discardLine = true;
+                line.SetLength(0);
+                return;
+            }
+            line.Write(buffer, offset, count);
+        }
+
+        private static void ProcessTokenLine(
+            string line,
+            HistoryCacheEntry entry,
+            ref long previousTotal,
+            ref DateTime latestContextSample)
+        {
+            if (line.IndexOf("\"token_count\"", StringComparison.Ordinal) < 0) return;
+            ContextCapacitySnapshot latestContext;
+            if (TryParseContextLine(line, out latestContext)
+                && latestContext != null
+                && latestContext.SampleUtc >= latestContextSample)
+            {
+                latestContextSample = latestContext.SampleUtc;
+                entry.HasContextSnapshot = true;
+                entry.ContextOccupiedTokens = Math.Max(0, latestContext.InputTokens);
+                entry.ContextCapacityTokens = Math.Max(0, latestContext.CapacityTokens);
+                entry.ContextCachedInputTokens = Math.Max(0, Math.Min(entry.ContextOccupiedTokens, latestContext.CachedInputTokens));
+                entry.ContextOutputTokens = Math.Max(0, latestContext.OutputTokens);
+                entry.ContextReasoningOutputTokens = Math.Max(0, Math.Min(entry.ContextOutputTokens, latestContext.ReasoningOutputTokens));
+                entry.HasContextBreakdown = latestContext.InputBreakdownAvailable;
+                entry.ContextSampleUtcTicks = latestContext.SampleUtc == DateTime.MinValue ? 0 : latestContext.SampleUtc.Ticks;
+            }
+            ParsedTokenLine parsed;
+            if (!TryParseTokenLine(line, out parsed)) return;
+            long delta;
+            if (parsed.CumulativeTotal > 0)
+            {
+                delta = parsed.CumulativeTotal >= previousTotal
+                    ? parsed.CumulativeTotal - previousTotal
+                    : parsed.CumulativeTotal;
+                previousTotal = parsed.CumulativeTotal;
+            }
+            else
+            {
+                delta = parsed.IncrementalTotal;
+                previousTotal = SafeAdd(previousTotal, delta);
+            }
+            if (delta <= 0) return;
+            string day = parsed.TimestampUtc.ToLocalTime().ToString("yyyy-MM-dd", CultureInfo.InvariantCulture);
+            long existing;
+            entry.Days.TryGetValue(day, out existing);
+            entry.Days[day] = SafeAdd(existing, delta);
+            entry.TotalTokens = SafeAdd(entry.TotalTokens, delta);
+            if (String.IsNullOrEmpty(entry.FirstDay) || StringComparer.Ordinal.Compare(day, entry.FirstDay) < 0)
+                entry.FirstDay = day;
+        }
+
+        private static bool IsCompleteLineBoundary(FileInfo file, long offset)
+        {
+            if (offset <= 0) return false;
+            try
+            {
+                using (FileStream stream = new FileStream(
+                    file.FullName,
+                    FileMode.Open,
+                    FileAccess.Read,
+                    FileShare.ReadWrite | FileShare.Delete))
+                {
+                    if (offset > stream.Length) return false;
+                    stream.Seek(offset - 1, SeekOrigin.Begin);
+                    return stream.ReadByte() == 10;
+                }
+            }
+            catch { return false; }
         }
 
         private static long ComponentDelta(long cumulative, bool hasCumulative, long incremental, bool hasIncremental, ref long previous)

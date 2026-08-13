@@ -5,6 +5,7 @@ using System.Globalization;
 using System.IO;
 using System.IO.Compression;
 using System.Net;
+using System.Net.Cache;
 using System.Text;
 using System.Web.Script.Serialization;
 
@@ -237,11 +238,14 @@ namespace CodexMonitor
             HttpWebRequest request = (HttpWebRequest)WebRequest.Create(UsageUrl);
             request.Method = "GET";
             request.Accept = "application/json";
-            request.UserAgent = "CodexQuotaOrb/0.2";
+            request.UserAgent = "CodexQuotaOrb/0.4.10";
             request.AllowAutoRedirect = false;
             request.AutomaticDecompression = DecompressionMethods.GZip | DecompressionMethods.Deflate;
+            request.CachePolicy = new RequestCachePolicy(RequestCacheLevel.BypassCache);
             request.Timeout = 8000;
             request.ReadWriteTimeout = 8000;
+            request.Headers[HttpRequestHeader.CacheControl] = "no-cache, no-store";
+            request.Headers[HttpRequestHeader.Pragma] = "no-cache";
             request.Headers[HttpRequestHeader.Authorization] = "Bearer " + auth.AccessToken;
             request.Headers["originator"] = "Codex Desktop";
             request.Headers["OAI-Product-Sku"] = "CODEX";

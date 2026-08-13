@@ -32,7 +32,9 @@ final class QuotaService: @unchecked Sendable {
         request.timeoutInterval = 8
         request.cachePolicy = .reloadIgnoringLocalAndRemoteCacheData
         request.setValue("application/json", forHTTPHeaderField: "Accept")
-        request.setValue("CodexQuotaOrb/0.3 macOS", forHTTPHeaderField: "User-Agent")
+        request.setValue("CodexQuotaOrb/0.4.10 macOS", forHTTPHeaderField: "User-Agent")
+        request.setValue("no-cache, no-store", forHTTPHeaderField: "Cache-Control")
+        request.setValue("no-cache", forHTTPHeaderField: "Pragma")
         request.setValue("Bearer \(auth.token)", forHTTPHeaderField: "Authorization")
         request.setValue("Codex Desktop", forHTTPHeaderField: "originator")
         request.setValue("CODEX", forHTTPHeaderField: "OAI-Product-Sku")

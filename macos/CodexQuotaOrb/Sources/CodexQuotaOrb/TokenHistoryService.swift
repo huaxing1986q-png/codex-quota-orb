@@ -1,7 +1,7 @@
 import Foundation
 
 private struct HistoryCacheDocument: Codable {
-    var version = 3
+    var version = 4
     var files: [String: HistoryCacheEntry] = [:]
 }
 
@@ -10,6 +10,7 @@ private struct HistoryCacheEntry: Codable {
     let modified: TimeInterval
     let days: [String: Int64]
     let totalTokens: Int64
+    let lastCumulativeTotal: Int64
     let contextOccupiedTokens: Int64
     let contextCapacityTokens: Int64
     let contextCachedInputTokens: Int64
@@ -23,11 +24,21 @@ private struct HistoryCacheEntry: Codable {
 
 private final class JSONLineReader {
     private let handle: FileHandle
+    private let limitOffset: UInt64
     private var buffer = Data()
+    private var readOffset: UInt64
     private var reachedEnd = false
+    private(set) var completedOffset: UInt64
+    private(set) var lastLineTerminated = true
 
-    init(url: URL) throws {
+    init(url: URL, startOffset: UInt64 = 0, endOffset: UInt64? = nil) throws {
         handle = try FileHandle(forReadingFrom: url)
+        let length = try handle.seekToEnd()
+        let boundedStart = min(startOffset, length)
+        limitOffset = min(endOffset ?? length, length)
+        readOffset = boundedStart
+        completedOffset = boundedStart
+        try handle.seek(toOffset: boundedStart)
     }
 
     deinit {
@@ -38,24 +49,40 @@ private final class JSONLineReader {
         while true {
             if let newline = buffer.firstIndex(of: 0x0A) {
                 let line = buffer[..<newline]
+                let consumed = buffer.distance(from: buffer.startIndex, to: newline) + 1
                 buffer.removeSubrange(...newline)
+                completedOffset += UInt64(consumed)
+                lastLineTerminated = true
                 return Data(line)
             }
             if reachedEnd {
                 guard !buffer.isEmpty else { return nil }
-                defer { buffer.removeAll(keepingCapacity: false) }
-                return buffer
+                let line = buffer
+                buffer.removeAll(keepingCapacity: false)
+                lastLineTerminated = false
+                return line
             }
-            let chunk = try handle.read(upToCount: 64 * 1024) ?? Data()
+            let remaining = limitOffset > readOffset ? limitOffset - readOffset : 0
+            if remaining == 0 {
+                reachedEnd = true
+                continue
+            }
+            let chunk = try handle.read(upToCount: Int(min(UInt64(64 * 1024), remaining))) ?? Data()
             if chunk.isEmpty {
                 reachedEnd = true
             } else {
+                readOffset += UInt64(chunk.count)
                 buffer.append(chunk)
                 if buffer.count > 4 * 1024 * 1024 {
                     throw CocoaError(.fileReadCorruptFile)
                 }
             }
         }
+    }
+
+    func acceptUnterminatedLine() {
+        guard !lastLineTerminated else { return }
+        completedOffset = limitOffset
     }
 }
 
@@ -127,6 +154,56 @@ final class TokenHistoryService: @unchecked Sendable {
             if occupancyEntry.contextOccupiedTokens != 80 || occupancyEntry.contextCapacityTokens != 200 {
                 failures.append("context occupancy should use the conversation's latest snapshot")
             }
+            let incrementalLine = """
+            {"timestamp":"2026-07-21T02:10:00Z","type":"event_msg","payload":{"type":"token_count","info":{"total_token_usage":{"total_tokens":360},"last_token_usage":{"total_tokens":60},"model_context_window":200}}}
+            """
+            let appendIncremental = try FileHandle(forWritingTo: active)
+            try appendIncremental.seekToEnd()
+            try appendIncremental.write(contentsOf: Data((incrementalLine + "\n").utf8))
+            try appendIncremental.close()
+            let incrementalValues = try active.resourceValues(forKeys: [.fileSizeKey, .contentModificationDateKey])
+            let incrementalEntry = scan(
+                active,
+                length: UInt64(max(0, incrementalValues.fileSize ?? 0)),
+                modified: incrementalValues.contentModificationDate?.timeIntervalSince1970 ?? 0,
+                base: occupancyEntry
+            )
+            if incrementalEntry.totalTokens != 360 {
+                failures.append("history cache should incrementally parse appended token lines")
+            }
+            let partialText = """
+            {"timestamp":"2026-07-21T02:20:00Z","type":"event_msg","payload":{"type":"token_count","info":{"total_token_usage":{"total_tokens":400},"last_token_usage":{"total_tokens":40},"model_context_window":200}}}
+            """
+            let partialLine = Data((partialText + "\n").utf8)
+            let split = partialLine.count / 2
+            let appendPartial = try FileHandle(forWritingTo: active)
+            try appendPartial.seekToEnd()
+            try appendPartial.write(contentsOf: Data(partialLine.prefix(split)))
+            try appendPartial.close()
+            let partialValues = try active.resourceValues(forKeys: [.fileSizeKey, .contentModificationDateKey])
+            let partialEntry = scan(
+                active,
+                length: UInt64(max(0, partialValues.fileSize ?? 0)),
+                modified: partialValues.contentModificationDate?.timeIntervalSince1970 ?? 0,
+                base: incrementalEntry
+            )
+            if partialEntry.totalTokens != 360 || partialEntry.length != incrementalEntry.length {
+                failures.append("history cache should ignore incomplete appended lines")
+            }
+            let appendRemainder = try FileHandle(forWritingTo: active)
+            try appendRemainder.seekToEnd()
+            try appendRemainder.write(contentsOf: Data(partialLine.suffix(from: split)))
+            try appendRemainder.close()
+            let completedValues = try active.resourceValues(forKeys: [.fileSizeKey, .contentModificationDateKey])
+            let completedEntry = scan(
+                active,
+                length: UInt64(max(0, completedValues.fileSize ?? 0)),
+                modified: completedValues.contentModificationDate?.timeIntervalSince1970 ?? 0,
+                base: partialEntry
+            )
+            if completedEntry.totalTokens != 400 {
+                failures.append("history cache should count a completed partial line exactly once")
+            }
             let selected = selectCurrentContext(from: [background, active])
             if selected?.sessionTotalTokens != 300 {
                 failures.append("background compaction should not replace active context")
@@ -186,6 +263,11 @@ final class TokenHistoryService: @unchecked Sendable {
             if let cached = cache.files[key], cached.length == length, abs(cached.modified - modified) < 0.001 {
                 entry = cached
                 reused += 1
+            } else if let cached = cache.files[key],
+                      cached.length > 0,
+                      cached.length < length,
+                      isCompleteLineBoundary(file, offset: cached.length) {
+                entry = scan(file, length: length, modified: modified, base: cached)
             } else {
                 entry = scan(file, length: length, modified: modified)
             }
@@ -597,28 +679,41 @@ final class TokenHistoryService: @unchecked Sendable {
         return result
     }
 
-    private func scan(_ file: URL, length: UInt64, modified: TimeInterval) -> HistoryCacheEntry {
-        var daily: [String: Int64] = [:]
-        var total: Int64 = 0
-        var previousCumulative: Int64 = 0
-        var latestContext: ContextCapacitySnapshot?
-        var hasContextBreakdown = false
-        var firstDay: String?
-        guard let reader = try? JSONLineReader(url: file) else {
+    private func scan(
+        _ file: URL,
+        length: UInt64,
+        modified: TimeInterval,
+        base: HistoryCacheEntry? = nil
+    ) -> HistoryCacheEntry {
+        var daily = base?.days ?? [:]
+        var total = max(0, base?.totalTokens ?? 0)
+        var previousCumulative = max(0, base?.lastCumulativeTotal ?? 0)
+        var contextOccupied = max(0, base?.contextOccupiedTokens ?? 0)
+        var contextCapacity = max(0, base?.contextCapacityTokens ?? 0)
+        var contextCached = max(0, base?.contextCachedInputTokens ?? 0)
+        var contextOutput = max(0, base?.contextOutputTokens ?? 0)
+        var contextReasoning = max(0, base?.contextReasoningOutputTokens ?? 0)
+        var contextSample = base?.contextSample
+        var hasContextSnapshot = base?.hasContextSnapshot ?? false
+        var hasContextBreakdown = base?.hasContextBreakdown ?? false
+        var firstDay = base?.firstDay
+        let start = base?.length ?? 0
+        guard let reader = try? JSONLineReader(url: file, startOffset: start, endOffset: length) else {
             return HistoryCacheEntry(
-                length: length,
+                length: start,
                 modified: modified,
-                days: [:],
-                totalTokens: 0,
-                contextOccupiedTokens: 0,
-                contextCapacityTokens: 0,
-                contextCachedInputTokens: 0,
-                contextOutputTokens: 0,
-                contextReasoningOutputTokens: 0,
-                contextSample: nil,
-                hasContextSnapshot: false,
-                hasContextBreakdown: false,
-                firstDay: nil
+                days: daily,
+                totalTokens: total,
+                lastCumulativeTotal: previousCumulative,
+                contextOccupiedTokens: contextOccupied,
+                contextCapacityTokens: contextCapacity,
+                contextCachedInputTokens: contextCached,
+                contextOutputTokens: contextOutput,
+                contextReasoningOutputTokens: contextReasoning,
+                contextSample: contextSample,
+                hasContextSnapshot: hasContextSnapshot,
+                hasContextBreakdown: hasContextBreakdown,
+                firstDay: firstDay
             )
         }
         while true {
@@ -629,10 +724,20 @@ final class TokenHistoryService: @unchecked Sendable {
                 break
             }
             guard let line = next else { break }
+            let completeJSON = (try? JSONSerialization.jsonObject(with: line)) != nil
+            if !reader.lastLineTerminated, completeJSON {
+                reader.acceptUnterminatedLine()
+            }
             guard line.range(of: Data(#""token_count""#.utf8)) != nil else { continue }
             if let parsedContext = parseContext(line),
-               latestContext == nil || (parsedContext.sampledAt ?? .distantPast) >= (latestContext?.sampledAt ?? .distantPast) {
-                latestContext = parsedContext
+               (parsedContext.sampledAt?.timeIntervalSince1970 ?? 0) >= (contextSample ?? 0) {
+                contextOccupied = max(0, parsedContext.inputTokens)
+                contextCapacity = max(0, parsedContext.capacityTokens)
+                contextCached = min(contextOccupied, max(0, parsedContext.cachedInputTokens))
+                contextOutput = max(0, parsedContext.outputTokens)
+                contextReasoning = min(contextOutput, max(0, parsedContext.reasoningOutputTokens))
+                contextSample = parsedContext.sampledAt?.timeIntervalSince1970
+                hasContextSnapshot = true
                 hasContextBreakdown = parsedContext.inputBreakdownAvailable
             }
             guard
@@ -663,23 +768,35 @@ final class TokenHistoryService: @unchecked Sendable {
             total = safeAdd(total, delta)
             if firstDay == nil || localDay < firstDay! { firstDay = localDay }
         }
-        let occupied = max(0, latestContext?.inputTokens ?? 0)
-        let contextOutput = max(0, latestContext?.outputTokens ?? 0)
         return HistoryCacheEntry(
-            length: length,
+            length: reader.completedOffset,
             modified: modified,
             days: daily,
             totalTokens: total,
-            contextOccupiedTokens: occupied,
-            contextCapacityTokens: max(0, latestContext?.capacityTokens ?? 0),
-            contextCachedInputTokens: min(occupied, max(0, latestContext?.cachedInputTokens ?? 0)),
+            lastCumulativeTotal: previousCumulative,
+            contextOccupiedTokens: contextOccupied,
+            contextCapacityTokens: contextCapacity,
+            contextCachedInputTokens: min(contextOccupied, contextCached),
             contextOutputTokens: contextOutput,
-            contextReasoningOutputTokens: min(contextOutput, max(0, latestContext?.reasoningOutputTokens ?? 0)),
-            contextSample: latestContext?.sampledAt?.timeIntervalSince1970,
-            hasContextSnapshot: latestContext != nil,
+            contextReasoningOutputTokens: min(contextOutput, contextReasoning),
+            contextSample: contextSample,
+            hasContextSnapshot: hasContextSnapshot,
             hasContextBreakdown: hasContextBreakdown,
             firstDay: firstDay
         )
+    }
+
+    private func isCompleteLineBoundary(_ file: URL, offset: UInt64) -> Bool {
+        guard offset > 0, let handle = try? FileHandle(forReadingFrom: file) else { return false }
+        defer { try? handle.close() }
+        do {
+            let length = try handle.seekToEnd()
+            guard offset <= length else { return false }
+            try handle.seek(toOffset: offset - 1)
+            return try handle.read(upToCount: 1)?.first == 0x0A
+        } catch {
+            return false
+        }
     }
 
     private func componentDelta(
@@ -711,7 +828,7 @@ final class TokenHistoryService: @unchecked Sendable {
             size.intValue <= maxCacheBytes,
             let data = try? Data(contentsOf: store.historyCacheURL),
             let cache = try? JSONDecoder().decode(HistoryCacheDocument.self, from: data),
-            cache.version == 3
+            cache.version == 4
         else { return HistoryCacheDocument() }
         return cache
     }

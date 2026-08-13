@@ -1,6 +1,6 @@
 {
   "name": "codex-monitor-overlay",
-  "version": "0.4.9",
+  "version": "0.4.10",
   "description": "A native high-DPI Codex quota orb for macOS and Windows with authoritative weekly quota, aggregate latest-context occupancy, and local token-history details.",
   "author": {
     "name": "Local developer"

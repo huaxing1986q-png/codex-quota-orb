@@ -14,7 +14,7 @@ final class SessionChangeMonitor {
     func start() {
         guard timer == nil else { return }
         let source = DispatchSource.makeTimerSource(queue: queue)
-        source.schedule(deadline: .now(), repeating: 1, leeway: .milliseconds(150))
+        source.schedule(deadline: .now(), repeating: .milliseconds(500), leeway: .milliseconds(100))
         source.setEventHandler { [weak self] in self?.poll() }
         source.resume()
         timer = source
@@ -36,7 +36,7 @@ final class SessionChangeMonitor {
             DispatchQueue.main.async(execute: callback)
         }
         pendingWork = work
-        queue.asyncAfter(deadline: .now() + .milliseconds(750), execute: work)
+        queue.asyncAfter(deadline: .now() + .milliseconds(250), execute: work)
     }
 
     private func currentSignature() -> String {

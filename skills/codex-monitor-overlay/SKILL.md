@@ -68,14 +68,14 @@ On Windows, preferences are stored in `%LOCALAPPDATA%\CodexMonitorOverlay\prefer
 - Remaining `>= 50%` is Healthy, `10–49%` is Caution, and `< 10%` is Critical.
 - UI and foreground detection update every 250ms.
 - Normal service calibration is every 30 seconds; within 15 minutes of reset it is every 10 seconds.
-- Local session changes trigger a debounced service refresh after 750ms.
+- Local session changes are coalesced for 250ms and forced through after at most 2 seconds of continuous writes. After a change, poll the official service at the 2-second minimum spacing for a 12-second catch-up window so a delayed upstream publication is not missed until the next 30-second calibration.
 - Focus and click-to-expand trigger a refresh with a 2-second minimum request spacing.
 - On a transient failure, retain the last successful values for at most 30 minutes and mark them stale. Never fabricate values or silently fall back to local token estimates.
 - Keep quota and token-history semantics separate. The floating percentage is official account quota. The details page reads only numeric `token_count` events from local Codex JSONL sessions and must never be described as account quota.
 - Keep aggregate context occupancy separate from account quota and from total Token history. Context occupancy is the sum of one latest `last_token_usage` snapshot per local conversation; Token history is the sum of historical `total_token_usage` increments.
 - Never use the foreground conversation alone. Use each conversation's latest `model_context_window` as that conversation's capacity, then aggregate all readable conversations.
 - Never feed `total_token_usage.input_tokens` into the context card, project context totals, or conversation context totals. It is historical input throughput and repeatedly counts carried context.
-- Aggregate token increments by each event's local calendar date. Reuse cache only when the source file length and last-write timestamp are unchanged.
+- Aggregate token increments by each event's local calendar date. Reuse cache when the source fingerprint is unchanged; for an append-only changed JSONL file, resume from the last complete newline and parse only appended bytes. Fall back to a complete rescan after truncation, replacement, cache-version change, or an unsafe line boundary.
 - macOS uses native AppKit/Retina drawing; Windows uses Per-Monitor DPI V2. Both must re-render at the destination monitor's native scale and never upscale a fixed bitmap for 4K displays.
 
 ## Inspect and validate

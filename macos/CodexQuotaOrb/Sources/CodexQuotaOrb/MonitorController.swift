@@ -16,6 +16,7 @@ final class MonitorController: OrbPanelActions {
     private var historyRequestInFlight = false
     private var lastQuotaRequest = Date.distantPast
     private var nextQuotaRefresh = Date.distantPast
+    private var quotaCatchUpUntil = Date.distantPast
     private var outsideSince: Date?
     private var globalClickMonitor: Any?
     private var localClickMonitor: Any?
@@ -161,6 +162,8 @@ final class MonitorController: OrbPanelActions {
 
     private func sessionsChanged() {
         refreshHistory()
+        quotaCatchUpUntil = Date().addingTimeInterval(12)
+        nextQuotaRefresh = .distantPast
         refreshQuota(force: true)
     }
 
@@ -201,7 +204,8 @@ final class MonitorController: OrbPanelActions {
         let closeToReset = display.weeklyReset.map {
             $0.timeIntervalSinceNow > -60 && $0.timeIntervalSinceNow < 15 * 60
         } ?? false
-        nextQuotaRefresh = Date().addingTimeInterval(closeToReset ? 10 : 30)
+        let catchUpActive = Date() < quotaCatchUpUntil
+        nextQuotaRefresh = Date().addingTimeInterval(catchUpActive ? 2 : (closeToReset ? 10 : 30))
         orb.update(snapshot: display, preferences: preferences)
         details.update(snapshot: history, language: preferences.language)
     }
