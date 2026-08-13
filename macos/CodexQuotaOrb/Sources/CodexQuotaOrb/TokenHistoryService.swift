@@ -148,11 +148,14 @@ final class TokenHistoryService: @unchecked Sendable {
             """
             try Data((activeLines + "\n").utf8).write(to: active)
             try Data(backgroundLines.utf8).write(to: background)
-            let activeValues = try active.resourceValues(forKeys: [.fileSizeKey, .contentModificationDateKey])
+            guard let activeValues = fileMetadata(active) else {
+                failures.append("context selection fixture should read active metadata")
+                return failures
+            }
             let occupancyEntry = scan(
                 active,
-                length: UInt64(max(0, activeValues.fileSize ?? 0)),
-                modified: activeValues.contentModificationDate?.timeIntervalSince1970 ?? 0
+                length: activeValues.length,
+                modified: activeValues.modified
             )
             if occupancyEntry.contextOccupiedTokens != 80 || occupancyEntry.contextCapacityTokens != 200 {
                 failures.append("context occupancy should use the conversation's latest snapshot")
@@ -162,11 +165,14 @@ final class TokenHistoryService: @unchecked Sendable {
             {"timestamp":"2026-07-21T02:00:00Z","type":"event_msg","payload":{"type":"token_count","info":{"total_token_usage":{"total_tokens":300},"last_token_usage":{"total_tokens":300},"model_context_window":200}}}
             """
             try Data((incrementalSeed + "\n").utf8).write(to: incrementalFile)
-            let seedValues = try incrementalFile.resourceValues(forKeys: [.fileSizeKey, .contentModificationDateKey])
+            guard let seedValues = fileMetadata(incrementalFile) else {
+                failures.append("history cache fixture should read seed metadata")
+                return failures
+            }
             let incrementalBase = scan(
                 incrementalFile,
-                length: UInt64(max(0, seedValues.fileSize ?? 0)),
-                modified: seedValues.contentModificationDate?.timeIntervalSince1970 ?? 0
+                length: seedValues.length,
+                modified: seedValues.modified
             )
             let incrementalLine = """
             {"timestamp":"2026-07-21T02:10:00Z","type":"event_msg","payload":{"type":"token_count","info":{"total_token_usage":{"total_tokens":360},"last_token_usage":{"total_tokens":60},"model_context_window":200}}}
@@ -175,11 +181,14 @@ final class TokenHistoryService: @unchecked Sendable {
             try appendIncremental.seekToEnd()
             try appendIncremental.write(contentsOf: Data((incrementalLine + "\n").utf8))
             try appendIncremental.close()
-            let incrementalValues = try incrementalFile.resourceValues(forKeys: [.fileSizeKey, .contentModificationDateKey])
+            guard let incrementalValues = fileMetadata(incrementalFile) else {
+                failures.append("history cache fixture should refresh appended metadata")
+                return failures
+            }
             let incrementalEntry = scan(
                 incrementalFile,
-                length: UInt64(max(0, incrementalValues.fileSize ?? 0)),
-                modified: incrementalValues.contentModificationDate?.timeIntervalSince1970 ?? 0,
+                length: incrementalValues.length,
+                modified: incrementalValues.modified,
                 base: incrementalBase
             )
             if incrementalEntry.totalTokens != 360 {
@@ -194,11 +203,14 @@ final class TokenHistoryService: @unchecked Sendable {
             try appendPartial.seekToEnd()
             try appendPartial.write(contentsOf: Data(partialLine.prefix(split)))
             try appendPartial.close()
-            let partialValues = try incrementalFile.resourceValues(forKeys: [.fileSizeKey, .contentModificationDateKey])
+            guard let partialValues = fileMetadata(incrementalFile) else {
+                failures.append("history cache fixture should refresh partial metadata")
+                return failures
+            }
             let partialEntry = scan(
                 incrementalFile,
-                length: UInt64(max(0, partialValues.fileSize ?? 0)),
-                modified: partialValues.contentModificationDate?.timeIntervalSince1970 ?? 0,
+                length: partialValues.length,
+                modified: partialValues.modified,
                 base: incrementalEntry
             )
             if partialEntry.totalTokens != 360 || partialEntry.length != incrementalEntry.length {
@@ -208,11 +220,14 @@ final class TokenHistoryService: @unchecked Sendable {
             try appendRemainder.seekToEnd()
             try appendRemainder.write(contentsOf: Data(partialLine.suffix(from: split)))
             try appendRemainder.close()
-            let completedValues = try incrementalFile.resourceValues(forKeys: [.fileSizeKey, .contentModificationDateKey])
+            guard let completedValues = fileMetadata(incrementalFile) else {
+                failures.append("history cache fixture should refresh completed metadata")
+                return failures
+            }
             let completedEntry = scan(
                 incrementalFile,
-                length: UInt64(max(0, completedValues.fileSize ?? 0)),
-                modified: completedValues.contentModificationDate?.timeIntervalSince1970 ?? 0,
+                length: completedValues.length,
+                modified: completedValues.modified,
                 base: partialEntry
             )
             if completedEntry.totalTokens != 400 {
@@ -268,11 +283,11 @@ final class TokenHistoryService: @unchecked Sendable {
 
         for file in files {
             let key = file.standardizedFileURL.path
-            guard let values = try? file.resourceValues(forKeys: [.fileSizeKey, .contentModificationDateKey]) else {
+            guard let values = fileMetadata(file) else {
                 continue
             }
-            let length = UInt64(max(0, values.fileSize ?? 0))
-            let modified = values.contentModificationDate?.timeIntervalSince1970 ?? 0
+            let length = values.length
+            let modified = values.modified
             let entry: HistoryCacheEntry
             if let cached = cache.files[key], cached.length == length, abs(cached.modified - modified) < 0.001 {
                 entry = cached
@@ -798,6 +813,15 @@ final class TokenHistoryService: @unchecked Sendable {
             hasContextBreakdown: hasContextBreakdown,
             firstDay: firstDay
         )
+    }
+
+    private func fileMetadata(_ file: URL) -> (length: UInt64, modified: TimeInterval)? {
+        guard let attributes = try? FileManager.default.attributesOfItem(atPath: file.path) else {
+            return nil
+        }
+        let length = (attributes[.size] as? NSNumber)?.uint64Value ?? 0
+        let modified = (attributes[.modificationDate] as? Date)?.timeIntervalSince1970 ?? 0
+        return (length, modified)
     }
 
     private func isCompleteLineBoundary(_ file: URL, offset: UInt64) -> Bool {
