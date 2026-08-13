@@ -143,7 +143,7 @@ final class TokenHistoryService: @unchecked Sendable {
             let backgroundLines = """
             {"timestamp":"2026-07-21T04:00:00Z","type":"event_msg","payload":{"type":"token_count","info":{"total_token_usage":{"total_tokens":77191446},"last_token_usage":{"input_tokens":0,"cached_input_tokens":0,"output_tokens":0,"reasoning_output_tokens":0,"total_tokens":62554},"model_context_window":258400}}}
             """
-            try Data(activeLines.utf8).write(to: active)
+            try Data((activeLines + "\n").utf8).write(to: active)
             try Data(backgroundLines.utf8).write(to: background)
             let activeValues = try active.resourceValues(forKeys: [.fileSizeKey, .contentModificationDateKey])
             let occupancyEntry = scan(
